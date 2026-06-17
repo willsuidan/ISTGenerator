@@ -4,10 +4,7 @@ Change this file when adding, renaming, or fixing a template placeholder variabl
 No docx XML manipulation lives here — pure data transformation.
 """
 
-from defaults import (
-    SYSTEM_DEFAULTS, APPB_DESC_DEFAULTS, MATRIX_DEFAULTS, TP_DEFAULTS,
-    GEN_SERVED_NORMAL, GEN_SERVED_GENMODE, GEN_SERVED_TP_NORMAL, GEN_SERVED_TP_GENMODE,
-)
+from defaults import APPB_DESC_DEFAULTS, MATRIX_DEFAULTS
 from constants import SYSTEMS, MONITORING_MATRIX_DEFAULTS
 
 
@@ -15,11 +12,27 @@ def build_replacements(data):
     pi = data.get("project_info", {})
     fa_sys = data.get("systems", {}).get("fire_alarm", {})
 
-    # FACP/FAAP from fire alarm system data
+    # FACP from fire alarm system data
     facp_room = fa_sys.get("facp_room", "")
     facp_floor = fa_sys.get("facp_floor", "")
-    faap_room = fa_sys.get("faap_room", "")
-    faap_floor = fa_sys.get("faap_floor", "")
+
+    # FAAP — 0, 1, or multiple annunciator panels
+    faap_panels = fa_sys.get("faap_panels", [])
+    faap_room = faap_panels[0].get("room", "") if faap_panels else ""
+    faap_floor = faap_panels[0].get("floor", "") if faap_panels else ""
+    if not faap_panels:
+        faap_sentence = ""
+    elif len(faap_panels) == 1:
+        faap_sentence = (
+            f" The fire alarm annunciator panel is located in the "
+            f"{faap_panels[0].get('room', '')} on the {faap_panels[0].get('floor', '')} of the building."
+        )
+    else:
+        faap_lines = [
+            f"• {p.get('room', '')} on the {p.get('floor', '')} of the building."
+            for p in faap_panels
+        ]
+        faap_sentence = " Fire alarm annunciator panels are located as follows:\n" + "\n".join(faap_lines)
 
     # Build initiating devices sentence
     fa_devices = fa_sys.get("fa_initiating_devices", [])
@@ -48,6 +61,19 @@ def build_replacements(data):
             fa_supervisory_sentence = ", ".join(sup_parts[:-1]) + f", and {sup_parts[-1]}"
     else:
         fa_supervisory_sentence = ""
+
+    # Build notification devices sentence: "horns and strobes" / "horns, strobes, and speakers"
+    fa_notif_devices = fa_sys.get("fa_notification_devices", [])
+    if fa_notif_devices:
+        notif_parts = [d["device"].lower() for d in fa_notif_devices]
+        if len(notif_parts) == 1:
+            fa_notification_sentence = notif_parts[0]
+        elif len(notif_parts) == 2:
+            fa_notification_sentence = f"{notif_parts[0]} and {notif_parts[1]}"
+        else:
+            fa_notification_sentence = ", ".join(notif_parts[:-1]) + f", and {notif_parts[-1]}"
+    else:
+        fa_notification_sentence = "horns and strobes"
 
     # Build fa_integrations from selected_systems list
     LABEL_TO_NAME = {
@@ -129,8 +155,7 @@ def build_replacements(data):
         "building_address": pi.get("address", ""),
         "building_city": pi.get("building_city", ""),
         "building_province": pi.get("building_province", ""),
-        "ag_storeys": pi.get("ag_storeys", ""),
-        "bg_storeys": pi.get("bg_storeys", ""),
+        # ag_storeys, bg_storeys, mezz_lvls built below with plural logic
         "construction_type": pi.get("construction_type", ""),
         "client_company": pi.get("client_company", ""),
         "client_address": pi.get("client_address", ""),
@@ -142,8 +167,10 @@ def build_replacements(data):
         "facp_floor": facp_floor,
         "faap_room": faap_room,
         "faap_floor": faap_floor,
+        "faap_sentence": faap_sentence,
         "fa_initiating_devices": fa_sentence,
         "fa_supervisory_devices": fa_supervisory_sentence,
+        "fa_notification_devices": fa_notification_sentence,
         "fa_integrations": fa_integrations,
         "fp_room": systems_data.get("fire_pump", {}).get("fp_room", ""),
         "fp_level": systems_data.get("fire_pump", {}).get("fp_floor", ""),
@@ -172,29 +199,18 @@ def build_replacements(data):
     replacements["gen_serve_s"] = "serves" if gen_count == 1 else "serve"
     served_labels = gen_sys.get("gen_served", [])
     replacements["system_s"] = "system" if len(served_labels) == 1 else "systems"
-    GEN_DISPLAY_BR = {
-        "Fire Pump": "Fire Pump", "Maglocks": "Electromagnetic Locks",
-        "Door Holders": "Door Holders", "AHU/Fan": "Air Handling Units",
-        "Smoke Dampers": "Smoke Dampers", "Fire Shutters": "Fire Shutters",
-        "Kitchen Hood": "Kitchen Hood Suppression System", "Elevator": "Elevator",
-    }
     # gen_served_list is expanded as separate paragraphs in expand_gen_served_system
     replacements["gen_served_list"] = ""  # placeholder — actual expansion done post replace_all
 
-    # Generator served systems TP (Normal Mode / Generator Mode) — feeds table 8 in template
+    # Generator served systems TP — use a sentinel that won't trigger replace_all loops.
+    # expand_gen_served_tp (called after replace_all) finds these sentinels and expands them.
     emerg_rows = gen_sys.get("gen_served_matrix_rows", [])
     if emerg_rows:
-        def _bullets(text):
-            lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
-            return "\n".join(f"•  {l.lstrip('- •').strip()}" for l in lines)
-
-        replacements["gen_integ_tp_norm_md"] = "\n".join(
-            _bullets(r.get("tp_normal", "")) for r in emerg_rows if r.get("tp_normal", "").strip())
-        replacements["gen_integ_tp_gen_md"] = "\n".join(
-            _bullets(r.get("tp_fire", "")) for r in emerg_rows if r.get("tp_fire", "").strip())
+        replacements["gen_integ_tp_norm_md"] = "__GEN_TP_NORM_EXPAND__"
+        replacements["gen_integ_tp_gen_md"]  = "__GEN_TP_FIRE_EXPAND__"
     else:
         replacements["gen_integ_tp_norm_md"] = ""
-        replacements["gen_integ_tp_gen_md"] = ""
+        replacements["gen_integ_tp_gen_md"]  = ""
 
     # Emergency generator served systems ITP (Appendix B section 3.6)
     gs_appb = gen_sys.get("gs_appb_rows", [])
@@ -381,5 +397,30 @@ def build_replacements(data):
     replacements["gen_con_pre_pan_fire_mode"] = _ppan.get("fire_mode", "").strip()
     replacements["gen_con_pre_sys_normal_mode"] = _psys.get("normal_mode", "").strip()
     replacements["gen_con_pre_sys_fire_mode"] = _psys.get("fire_mode", "").strip()
+
+    # ── Storey/Mezzanine plurals ─────────────────────────────────────────────────
+    try:
+        ag = int(pi.get("ag_storeys", "1") or "1")
+    except ValueError:
+        ag = 1
+    try:
+        bg = int(pi.get("bg_storeys", "0") or "0")
+    except ValueError:
+        bg = 0
+    try:
+        mezz = int(pi.get("mezz_lvls", "0") or "0")
+    except ValueError:
+        mezz = 0
+
+    replacements["ag_storeys"] = f"{ag} Storey" if ag == 1 else f"{ag} Storeys"
+    replacements["bg_storeys"] = f"{bg} Storey" if bg == 1 else f"{bg} Storeys"
+    replacements["mezz_lvls"]  = (f"+ {mezz} Mezzanine Level"  if mezz == 1 else
+                                  f"+ {mezz} Mezzanine Levels" if mezz  > 1 else "")
+
+    # Personnel Safety — Notifications
+    ps = data.get("personnel_safety", {})
+    replacements["noti_to_participants"] = ps.get("noti_to_participants", "")
+    replacements["noti_to_occupants"] = ps.get("noti_to_occupants", "")
+    replacements["prop_notice_example"] = ps.get("prop_notice_example", "")
 
     return replacements

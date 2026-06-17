@@ -10,13 +10,12 @@ from datetime import datetime
 
 from defaults import (
     SYSTEM_DEFAULTS, MATRIX_DEFAULTS, TP_DEFAULTS, APPB_DEFAULTS, APPB_DESC_DEFAULTS,
+    NOTIFICATION_DEFAULTS, format_weeks_notice,
+    PPE_DEFAULTS, SPECIAL_HAZARDS_DEFAULT, TEAM_COMMUNICATIONS_DEFAULT, OCCUPANT_NOTIFICATION_DEFAULT,
 )
-from constants import SYSTEMS, MONITORING_MATRIX_DEFAULTS, CONTRACTOR_TYPES, LOREM
-try:
-    from PIL import Image, ImageDraw, ImageFont
-    _PIL_AVAILABLE = True
-except ImportError:
-    _PIL_AVAILABLE = False
+from constants import SYSTEMS, MONITORING_MATRIX_DEFAULTS, CONTACT_TYPES, LOREM
+import importlib.util
+_PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
 
 from word_gen import generate_report
 from spellcheck import get_user_words, load_user_words
@@ -93,10 +92,13 @@ class DataMixin:
             if key == "fire_alarm":
                 sys_entry["fa_initiating_devices"]   = list(self.fa_devices)
                 sys_entry["fa_supervisory_devices"]  = list(getattr(self, "fa_supervisory_devices", []))
+                sys_entry["fa_notification_devices"] = list(getattr(self, "fa_notification_devices", []))
                 sys_entry["facp_room"]  = self.facp_room_entry.get().strip()
                 sys_entry["facp_floor"] = self.facp_floor_entry.get().strip()
-                sys_entry["faap_room"]  = self.faap_room_entry.get().strip()
-                sys_entry["faap_floor"] = self.faap_floor_entry.get().strip()
+                sys_entry["faap_panels"] = [
+                    {"room": r["room_entry"].get().strip(), "floor": r["floor_entry"].get().strip()}
+                    for r in getattr(self, "faap_rows", [])
+                ]
             if key == "fire_pump":
                 sys_entry["fp_room"]  = self.fp_room_entry.get().strip()
                 sys_entry["fp_floor"] = self.fp_floor_entry.get().strip()
@@ -122,7 +124,7 @@ class DataMixin:
                         "integration": r["integration"].get("1.0", "end-1c").strip(),
                         "normal":  r["normal"].get(),
                         "fire":    r["fire"].get(),
-                        "notes":   r["notes"].get("1.0", "end-1c").strip(),
+                        "notes":   r["notes"].get().strip(),
                         "sw_type": r.get("sw_type", tk.StringVar()).get(),
                         "sw_no":   r.get("sw_no",   tk.StringVar()).get(),
                     }
@@ -137,7 +139,12 @@ class DataMixin:
                 sys_entry["gen_class"]  = self.gen_class_var.get()
                 sys_entry["gen_room"]   = self.gen_room_entry.get().strip()
                 sys_entry["gen_floor"]  = self.gen_floor_entry.get().strip()
+                sys_entry["gen_count"]  = self.gen_count_var.get()
                 sys_entry["gen_served"] = [lbl for lbl, v in self.gen_served_vars.items() if v.get()]
+                sys_entry["gen_custom_served"] = [
+                    {"label": c["label"], "checked": c["var"].get()}
+                    for c in getattr(self, "gen_custom_served", [])
+                ]
                 # Save generator served systems matrix rows
                 sys_entry["gen_served_matrix_rows"] = [
                     _read_matrix_row(r) for r in getattr(self, "_gen_served_matrix_rows", [])
@@ -161,6 +168,22 @@ class DataMixin:
                 sys_entry["elev_count"]         = self.elev_count_var.get()
                 sys_entry["elev_primary_floor"]  = self.elev_primary_floor.get().strip()
                 sys_entry["elev_alternate_floor"] = self.elev_alternate_floor.get().strip()
+                # Gather elevator action rows
+                ea_data = self.sys_ui.get("elevator", {}).get("elev_actions", {})
+                ea_rows = ea_data.get("_rows", [])
+                elev_actions = []
+                for r in ea_rows:
+                    act_w  = r.get("action")
+                    desc_w = r.get("desc")
+                    act  = act_w.get("1.0",  "end-1c").strip() if act_w  else ""
+                    desc = desc_w.get("1.0", "end-1c").strip() if desc_w else ""
+                    elev_actions.append({
+                        "action": act,
+                        "desc":   desc,
+                        "_auto_desc_key": r.get("_auto_desc_key"),
+                        "_user_edited":   r.get("_user_edited", [False])[0],
+                    })
+                sys_entry["elev_actions"] = elev_actions
             if key == "sprinkler":
                 sys_entry["sprinkler_subtypes"] = {s: v.get() for s, v in self._sprinkler_subtype_vars.items()}
                 sys_entry["sprk_valve_locations"] = list(getattr(self, "sprk_valve_locations", []))
@@ -200,6 +223,22 @@ class DataMixin:
             "diagram_png_path":     getattr(self, "_diag_selected_png", None) or "",
             "output_path":          self.output_path.get(),
             "user_dictionary":      get_user_words(),
+            "ist_notes":            [t.get("1.0", "end-1c") for t in getattr(self, "ist_notes", [])],
+            "forms_documentation":  getattr(self, "_forms_doc_text", None) and self._forms_doc_text.get("1.0", "end-1c") or "",
+            "personnel_safety": {
+                "noti_to_participants":   self._noti_participants_text.get("1.0", "end-1c"),
+                "participant_wks_notice": self.participant_wks_notice_var.get(),
+                "noti_to_occupants":      self._noti_occupants_text.get("1.0", "end-1c"),
+                "occupant_hrs_notice":    self.occupant_hrs_notice_var.get(),
+                "prop_notice_example":    self._prop_notice_text.get("1.0", "end-1c"),
+                "building_phase":         self.building_phase_var.get(),
+                "ppe_required":           self.ppe_required_var.get(),
+                "ppe_items":              list(self.ppe_items),
+                "safety_protocols":       self._safety_protocols_text.get("1.0", "end-1c"),
+                "special_hazards":        self._special_hazards_text.get("1.0", "end-1c"),
+                "team_communications":    self._team_communications_text.get("1.0", "end-1c"),
+                "occupant_notification":  self._occupant_notification_text.get("1.0", "end-1c"),
+            },
         }
 
     def _populate_from_data(self, data):
@@ -257,7 +296,64 @@ class DataMixin:
             self._add_occupancy_row()
 
         self.contractors = data.get("contractors", [])
-        self._refresh_contractor_tree()
+        self._refresh_contact_tree()
+
+        # Restore IST notes
+        for t in list(getattr(self, "ist_notes", [])):
+            try: t.master.destroy()
+            except Exception: pass
+        if hasattr(self, "ist_notes"):
+            self.ist_notes.clear()
+        saved_notes = data.get("ist_notes", [])
+        add_note = getattr(self, "_add_ist_note", None)
+        if add_note:
+            notes_to_load = saved_notes if saved_notes else [""] * 5
+            for text in notes_to_load:
+                add_note(text)
+
+        # Restore Personnel Safety / Notifications data
+        ps = data.get("personnel_safety", {})
+        if ps:
+            self.participant_wks_notice_var.set(
+                ps.get("participant_wks_notice", NOTIFICATION_DEFAULTS["participant_wks_notice"]))
+            self.occupant_hrs_notice_var.set(
+                ps.get("occupant_hrs_notice", NOTIFICATION_DEFAULTS["occupant_hrs_notice"]))
+            self._noti_participants_text.delete("1.0", "end")
+            self._noti_participants_text.insert("1.0", ps.get("noti_to_participants",
+                NOTIFICATION_DEFAULTS["noti_to_participants"].replace(
+                    "{{participant_wks_notice}}", format_weeks_notice(self.participant_wks_notice_var.get()))))
+            self._noti_occupants_text.delete("1.0", "end")
+            self._noti_occupants_text.insert("1.0", ps.get("noti_to_occupants",
+                NOTIFICATION_DEFAULTS["noti_to_occupants"].replace(
+                    "{{occupant_hrs_notice}}", str(self.occupant_hrs_notice_var.get()))))
+            self._prop_notice_text.delete("1.0", "end")
+            self._prop_notice_text.insert("1.0", ps.get("prop_notice_example",
+                NOTIFICATION_DEFAULTS["prop_notice_example"]))
+
+            # Personnel Safety section (5.1-5.4)
+            self.building_phase_var.set(ps.get("building_phase", "occupied"))
+            self.ppe_required_var.set(ps.get("ppe_required", True))
+            self.ppe_items = list(ps.get("ppe_items", PPE_DEFAULTS))
+            if hasattr(self, "_refresh_ppe_tree"):
+                self._refresh_ppe_tree()
+            if hasattr(self, "_update_safety_protocols"):
+                self._update_safety_protocols()
+            saved_sp = ps.get("safety_protocols", "").strip()
+            if saved_sp:
+                self._safety_protocols_text.delete("1.0", "end")
+                self._safety_protocols_text.insert("1.0", ps.get("safety_protocols"))
+
+            self._special_hazards_text.delete("1.0", "end")
+            self._special_hazards_text.insert("1.0", ps.get("special_hazards", SPECIAL_HAZARDS_DEFAULT))
+            self._team_communications_text.delete("1.0", "end")
+            self._team_communications_text.insert("1.0", ps.get("team_communications", TEAM_COMMUNICATIONS_DEFAULT))
+            self._occupant_notification_text.delete("1.0", "end")
+            self._occupant_notification_text.insert("1.0", ps.get("occupant_notification", OCCUPANT_NOTIFICATION_DEFAULT))
+
+        fd_widget = getattr(self, "_forms_doc_text", None)
+        if fd_widget:
+            fd_widget.delete("1.0", "end")
+            fd_widget.insert("1.0", data.get("forms_documentation", ""))
 
         systems_data = data.get("systems", {})
         for sys_info in SYSTEMS:
@@ -325,14 +421,23 @@ class DataMixin:
                     sup_devs.clear()
                     sup_devs.extend(sys.get("fa_supervisory_devices", []))
                     self._fa_sup_refresh(skip_preview=True)
+                # Notification devices
+                notif_devs = getattr(self, "fa_notification_devices", None)
+                if notif_devs is not None:
+                    notif_devs.clear()
+                    notif_devs.extend(sys.get("fa_notification_devices", [
+                        {"device": "Horns"}, {"device": "Strobes"}
+                    ]))
+                    self._fa_notif_refresh(skip_preview=True)
                 for entry, saved_key in [
                     (self.facp_room_entry,  "facp_room"),
                     (self.facp_floor_entry, "facp_floor"),
-                    (self.faap_room_entry,  "faap_room"),
-                    (self.faap_floor_entry, "faap_floor"),
                 ]:
                     entry.delete(0, "end")
                     entry.insert(0, sys.get(saved_key, ""))
+                self._clear_faap_rows()
+                for panel in sys.get("faap_panels", []):
+                    self._add_faap_row(panel.get("room", ""), panel.get("floor", ""))
             if key == "sprinkler" and self._sprinkler_subtype_vars:
                 saved_subtypes = sys.get("sprinkler_subtypes", {})
                 # Support old list format
@@ -440,6 +545,18 @@ class DataMixin:
                 self.gen_class_var.set(sys.get("gen_class", "non-emergency"))
                 self.gen_room_entry.delete(0, "end"); self.gen_room_entry.insert(0, sys.get("gen_room", ""))
                 self.gen_floor_entry.delete(0, "end"); self.gen_floor_entry.insert(0, sys.get("gen_floor", ""))
+                # Restore custom served systems first so checklist rebuild includes them
+                saved_custom = sys.get("gen_custom_served", [])
+                custom_list = getattr(self, "gen_custom_served", [])
+                custom_list.clear()
+                import tkinter as tk_mod
+                for c in saved_custom:
+                    lbl = c.get("label", "")
+                    if lbl:
+                        var = tk_mod.BooleanVar(value=c.get("checked", True))
+                        custom_list.append({"label": lbl, "var": var})
+                if hasattr(self, "_refresh_gen_checklist"):
+                    self._refresh_gen_checklist()
                 saved_served = set(sys.get("gen_served", []))
                 for lbl, var in self.gen_served_vars.items():
                     var.set(lbl in saved_served)
@@ -508,6 +625,29 @@ class DataMixin:
                 self.elev_alternate_floor.delete(0, "end"); self.elev_alternate_floor.insert(0, sys.get("elev_alternate_floor", ""))
                 if hasattr(self, "_update_elev_preview"):
                     self._update_elev_preview()
+                # Restore elevator action rows
+                ea_data    = ui.get("elev_actions", {})
+                add_ea_row = ea_data.get("_add_row")
+                ea_rows_ui = ea_data.get("_rows", [])
+                saved_ea   = sys.get("elev_actions", [])
+                if add_ea_row and saved_ea:
+                    # Clear existing default rows
+                    for r in list(ea_rows_ui):
+                        for col_key in ("_drag_handle", "_no_lbl", "action", "desc", "_rm_btn"):
+                            w = r.get(col_key)
+                            if w and hasattr(w, "winfo_exists") and w.winfo_exists():
+                                try: w.destroy()
+                                except Exception: pass
+                    ea_rows_ui.clear()
+                    for entry in saved_ea:
+                        r = add_ea_row(
+                            action=entry.get("action", ""),
+                            desc=entry.get("desc", ""),
+                            _auto_desc_key=entry.get("_auto_desc_key"),
+                        )
+                        if r:
+                            ue = entry.get("_user_edited", False)
+                            r.get("_user_edited", [False])[0] = ue
             # Restore Appendix B rows
             appb = ui.get("appb", {})
             add_appb = appb.get("_add_row")
@@ -614,15 +754,15 @@ class DataMixin:
             messagebox.showerror("Generation Error", f"Could not generate report:\n\n{e}")
 
     # ============================================================
-    #   CONTRACTORS
+    #   CONTACTS
     # ============================================================
 
-    def open_add_contractor(self):
-        self._open_contractor_dialog()
+    def open_add_contact(self):
+        self._open_contact_dialog()
 
-    def _open_contractor_dialog(self, existing=None, index=None):
+    def _open_contact_dialog(self, existing=None, index=None):
         dialog = tk.Toplevel(self.root)
-        dialog.title("Add Contractor" if existing is None else "Edit Contractor")
+        dialog.title("Add Contact" if existing is None else "Edit Contact")
         dialog.geometry("480x240")
         dialog.transient(self.root)
         dialog.grab_set()
@@ -631,7 +771,7 @@ class DataMixin:
 
         ttk.Label(frame, text="Role:").grid(row=0, column=0, sticky="w", pady=5)
         role_var = tk.StringVar(value=existing.get("role", "") if existing else "")
-        ttk.Combobox(frame, textvariable=role_var, values=CONTRACTOR_TYPES, width=42).grid(
+        ttk.Combobox(frame, textvariable=role_var, values=CONTACT_TYPES, width=42).grid(
             row=0, column=1, pady=5, sticky="we")
 
         for i, (lbl_text, field) in enumerate([
@@ -658,35 +798,35 @@ class DataMixin:
                 self.contractors[index] = d
             else:
                 self.contractors.append(d)
-            self._refresh_contractor_tree()
+            self._refresh_contact_tree()
             dialog.destroy()
 
         ttk.Button(btn_frame, text="Save",   command=save).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=5)
         frame.columnconfigure(1, weight=1)
 
-    def _refresh_contractor_tree(self):
-        self.contractor_tree.delete(*self.contractor_tree.get_children())
+    def _refresh_contact_tree(self):
+        self.contact_tree.delete(*self.contact_tree.get_children())
         for i, c in enumerate(self.contractors):
-            self.contractor_tree.insert("", "end", iid=str(i),
+            self.contact_tree.insert("", "end", iid=str(i),
                 values=(c.get("role",""), c.get("company",""),
                         c.get("phone",""), c.get("name","")))
 
-    def edit_contractor(self):
-        sel = self.contractor_tree.selection()
+    def edit_contact(self):
+        sel = self.contact_tree.selection()
         if not sel:
-            messagebox.showinfo("No Selection", "Please select a contractor to edit.")
+            messagebox.showinfo("No Selection", "Please select a contact to edit.")
             return
-        self._open_contractor_dialog(existing=self.contractors[int(sel[0])], index=int(sel[0]))
+        self._open_contact_dialog(existing=self.contractors[int(sel[0])], index=int(sel[0]))
 
-    def delete_contractor(self):
-        sel = self.contractor_tree.selection()
+    def delete_contact(self):
+        sel = self.contact_tree.selection()
         if not sel:
-            messagebox.showinfo("No Selection", "Please select a contractor to delete.")
+            messagebox.showinfo("No Selection", "Please select a contact to delete.")
             return
-        if messagebox.askyesno("Confirm Delete", "Delete this contractor?"):
+        if messagebox.askyesno("Confirm Delete", "Delete this contact?"):
             del self.contractors[int(sel[0])]
-            self._refresh_contractor_tree()
+            self._refresh_contact_tree()
 
     # ============================================================
     #   CLEAR ALL
@@ -733,8 +873,50 @@ class DataMixin:
             widget.destroy()
         self.occ_vars = []
         self._add_occupancy_row()
-        self.contractors = []
-        self._refresh_contractor_tree()
+        # Reset IST notes to 5 blank rows
+        for t in list(getattr(self, "ist_notes", [])):
+            try: t.master.destroy()
+            except Exception: pass
+        if hasattr(self, "ist_notes"):
+            self.ist_notes.clear()
+        add_note = getattr(self, "_add_ist_note", None)
+        if add_note:
+            for _ in range(5):
+                add_note()
+
+        # Reset Personnel Safety / Notifications to defaults
+        self.participant_wks_notice_var.set(NOTIFICATION_DEFAULTS["participant_wks_notice"])
+        self.occupant_hrs_notice_var.set(NOTIFICATION_DEFAULTS["occupant_hrs_notice"])
+        if hasattr(self, "_update_noti_participants"):
+            self._update_noti_participants()
+        if hasattr(self, "_update_noti_occupants"):
+            self._update_noti_occupants()
+        self._prop_notice_text.delete("1.0", "end")
+        self._prop_notice_text.insert("1.0", NOTIFICATION_DEFAULTS["prop_notice_example"])
+
+        # Reset Personnel Safety (5.1-5.4) to defaults
+        self.building_phase_var.set("occupied")
+        self.ppe_required_var.set(True)
+        self.ppe_items = list(PPE_DEFAULTS)
+        if hasattr(self, "_refresh_ppe_tree"):
+            self._refresh_ppe_tree()
+        if hasattr(self, "_update_ppe_state"):
+            self._update_ppe_state()
+        if hasattr(self, "_update_safety_protocols"):
+            self._update_safety_protocols()
+        self._special_hazards_text.delete("1.0", "end")
+        self._special_hazards_text.insert("1.0", SPECIAL_HAZARDS_DEFAULT)
+        self._team_communications_text.delete("1.0", "end")
+        self._team_communications_text.insert("1.0", TEAM_COMMUNICATIONS_DEFAULT)
+        self._occupant_notification_text.delete("1.0", "end")
+        self._occupant_notification_text.insert("1.0", OCCUPANT_NOTIFICATION_DEFAULT)
+
+        self.contractors = [
+            {"role": "Owner/Owner's Representative", "company": "", "name": "", "phone": ""},
+            {"role": "Fire Protection Engineer", "company": "ARENCON Inc.", "name": "", "phone": "905-615-1774"},
+            {"role": "Integrated Testing Coordinator", "company": "ARENCON Inc.", "name": "", "phone": "905-615-1774"},
+        ]
+        self._refresh_contact_tree()
         for sys_info in SYSTEMS:
             key = sys_info["key"]
             ui  = self.sys_ui[key]
@@ -782,10 +964,14 @@ class DataMixin:
                 if sup_devs is not None:
                     sup_devs.clear()
                     self._fa_sup_refresh(skip_preview=True)
+                notif_devs = getattr(self, "fa_notification_devices", None)
+                if notif_devs is not None:
+                    notif_devs.clear()
+                    self._fa_notif_refresh(skip_preview=True)
                 self._fa_refresh()
-                for entry in (self.facp_room_entry, self.facp_floor_entry,
-                              self.faap_room_entry, self.faap_floor_entry):
+                for entry in (self.facp_room_entry, self.facp_floor_entry):
                     entry.delete(0, "end")
+                self._clear_faap_rows()
             if key == "sprinkler" and self._sprinkler_subtype_vars:
                 for subtype, var in self._sprinkler_subtype_vars.items():
                     var.set(subtype == "Wet Pipe")

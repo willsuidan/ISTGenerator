@@ -16,8 +16,8 @@ def populate_contacts_table(doc, contractors):
     for table in doc.tables:
         for row in table.rows:
             row_text = "".join(cell.text for cell in row.cells)
-            if ("contractor_role" in row_text and "contractor_company" in row_text
-                    and "contractor_phone" in row_text):
+            if ("contact_role" in row_text and "contact_company" in row_text
+                    and "contact_phone" in row_text):
                 contacts_table = table
                 placeholder_row = row
                 break
@@ -33,22 +33,22 @@ def populate_contacts_table(doc, contractors):
         for cell in contacts_table.rows[-1].cells:
             for para in cell.paragraphs:
                 replace_in_paragraph(para, {
-                    "contractor_role": c.get("role", ""),
-                    "contractor_company": c.get("company", ""),
-                    "contractor_phone": c.get("phone", ""),
+                    "contact_role": c.get("role", ""),
+                    "contact_company": c.get("company", ""),
+                    "contact_phone": c.get("phone", ""),
                 })
 
 
 def populate_notifications_table(doc, contractors):
-    """Notifications table: 'role – company' | phone — same row, no contractor_name."""
+    """Notifications table: 'role – company' | phone — same row, no contact_name."""
     notif_table = None
     placeholder_row = None
     for table in doc.tables:
         for row in table.rows:
             row_text = "".join(cell.text for cell in row.cells)
-            if ("contractor_role" in row_text and "contractor_phone" in row_text
-                    and "contractor_name" not in row_text
-                    and "contractor_company" in row_text):
+            if ("contact_role" in row_text and "contact_phone" in row_text
+                    and "contact_name" not in row_text
+                    and "contact_company" in row_text):
                 notif_table = table
                 placeholder_row = row
                 break
@@ -64,39 +64,42 @@ def populate_notifications_table(doc, contractors):
         for cell in notif_table.rows[-1].cells:
             for para in cell.paragraphs:
                 replace_in_paragraph(para, {
-                    "contractor_role": c.get("role", ""),
-                    "contractor_company": c.get("company", ""),
-                    "contractor_phone": c.get("phone", ""),
+                    "contact_role": c.get("role", ""),
+                    "contact_company": c.get("company", ""),
+                    "contact_phone": c.get("phone", ""),
                 })
 
 
 def populate_signatures_table(doc, contractors):
     """
     Two signature tables:
-      Table A — 1 row: contractor_role | contractor_company | contractor_name (all in same row)
-      Table B — 3-row group per contractor:
-                  row 0: contractor_role (merged) | Company: | contractor_company
-                  row 1: (merged)                 | Name:    | contractor_name
-                  row 2: (merged)                 | Signature: | blank | Date: | blank
+      Table A — 1 row: contact_role | contact_company | contact_name (all in same row)
+      Table B — 3-row group per contact:
+                  row 0: contact_role (merged) | Company: | contact_company
+                  row 1: (merged)              | Name:    | contact_name
+                  row 2: (merged)              | Signature: | blank | Date: | blank
+
+    For Table B (Appendix C blank form), only contact_role is injected —
+    company and name cells are left blank so the form can be filled in by hand.
     """
     for table in doc.tables:
         full_text = "".join(cell.text for row in table.rows for cell in row.cells)
-        if "contractor_role" not in full_text or "contractor_name" not in full_text:
+        if "contact_role" not in full_text or "contact_name" not in full_text:
             continue
 
-        # Find which row starts the contractor group
+        # Find which row starts the contact group
         start_idx = None
         for idx, row in enumerate(table.rows):
             row_text = "".join(cell.text for cell in row.cells)
-            if "contractor_role" in row_text:
+            if "contact_role" in row_text:
                 start_idx = idx
                 break
         if start_idx is None:
             continue
 
-        # Determine group size: 1 row if contractor_name is in same row, else 3 rows
+        # Determine group size: 1 row if contact_name is in same row, else 3 rows
         start_row_text = "".join(cell.text for cell in table.rows[start_idx].cells)
-        rows_in_group = 1 if "contractor_name" in start_row_text else 3
+        rows_in_group = 1 if "contact_name" in start_row_text else 3
 
         # Copy template rows
         group_trs = [
@@ -110,19 +113,35 @@ def populate_signatures_table(doc, contractors):
             tr = table.rows[start_idx + i]._tr
             tr.getparent().remove(tr)
 
-        # Insert one group per contractor
+        # Insert one group per contact
         for c in contractors:
-            replacements = {
-                "contractor_role": c.get("role", ""),
-                "contractor_company": c.get("company", ""),
-                "contractor_name": c.get("name", ""),
-            }
-            for template_tr in group_trs:
-                new_tr = deepcopy(template_tr)
-                table._tbl.append(new_tr)
-                for cell in table.rows[-1].cells:
-                    for para in cell.paragraphs:
-                        replace_in_paragraph(para, replacements)
+            if rows_in_group == 1:
+                # Table A (e.g. Section 1.2 Project Contacts): fill all fields
+                replacements = {
+                    "contact_role":    c.get("role", ""),
+                    "contact_company": c.get("company", ""),
+                    "contact_name":    c.get("name", ""),
+                }
+                for template_tr in group_trs:
+                    new_tr = deepcopy(template_tr)
+                    table._tbl.append(new_tr)
+                    for cell in table.rows[-1].cells:
+                        for para in cell.paragraphs:
+                            replace_in_paragraph(para, replacements)
+            else:
+                # Table B (Appendix C blank form): only inject contact_role;
+                # leave company/name blank so the form is filled in by hand.
+                replacements = {
+                    "contact_role":    c.get("role", ""),
+                    "contact_company": "",
+                    "contact_name":    "",
+                }
+                for template_tr in group_trs:
+                    new_tr = deepcopy(template_tr)
+                    table._tbl.append(new_tr)
+                    for cell in table.rows[-1].cells:
+                        for para in cell.paragraphs:
+                            replace_in_paragraph(para, replacements)
 
 
 def populate_occupancies_table(doc, occupancies):
@@ -187,3 +206,42 @@ def populate_occupancies_table(doc, occupancies):
         _make_run(tab_prefix)
         _make_run(content)
         parent.insert(insert_idx + i, new_el)
+
+def populate_ist_notes_table(doc, ist_notes):
+    """Appendix B Integrated Testing Notes table.
+    Finds the row containing {{appb_ist_notes}}, clones it once per note,
+    and injects the text. The number cell gets the row number.
+    """
+    notes_table = None
+    placeholder_row = None
+    for table in doc.tables:
+        for row in table.rows:
+            if "appb_ist_notes" in "".join(cell.text for cell in row.cells):
+                notes_table = table
+                placeholder_row = row
+                break
+        if notes_table:
+            break
+    if notes_table is None or placeholder_row is None:
+        return
+
+    template_tr = deepcopy(placeholder_row._tr)
+    placeholder_row._tr.getparent().remove(placeholder_row._tr)
+
+    for i, text in enumerate(ist_notes):
+        new_tr = deepcopy(template_tr)
+        notes_table._tbl.append(new_tr)
+        for cell in notes_table.rows[-1].cells:
+            for para in cell.paragraphs:
+                replace_in_paragraph(para, {
+                    "appb_ist_notes": text or "",
+                })
+        # Set the number cell (first cell) to the row number
+        first_cell = notes_table.rows[-1].cells[0]
+        if first_cell.paragraphs:
+            for run in first_cell.paragraphs[0].runs:
+                run.text = ""
+            if first_cell.paragraphs[0].runs:
+                first_cell.paragraphs[0].runs[0].text = str(i + 1)
+            else:
+                first_cell.paragraphs[0].add_run(str(i + 1))

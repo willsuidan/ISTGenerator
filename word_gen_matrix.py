@@ -8,8 +8,8 @@ from copy import deepcopy
 from lxml import etree
 from docx.shared import Inches
 
-from defaults import MATRIX_DEFAULTS, APPB_DESC_DEFAULTS
-from constants import SYSTEMS, MONITORING_MATRIX_DEFAULTS
+from defaults import MATRIX_DEFAULTS
+from constants import SYSTEMS
 from word_gen_replacements import build_replacements
 
 
@@ -229,10 +229,15 @@ def populate_matrix_table(doc, data):
             n_served = len(served_labels)
             for i, lbl in enumerate(served_labels):
                 if lbl not in GEN_CON_MAP:
-                    continue
-                sys_b_name, prefix = GEN_CON_MAP[lbl]
-                normal_val = replacements.get(f"{prefix}_normal_mode", "")
-                fire_val = replacements.get(f"{prefix}_fire_mode", "")
+                    # Custom user-added system — use generic gen-served text
+                    from defaults import GEN_SERVED_NORMAL, GEN_SERVED_GENMODE
+                    sys_b_name = lbl
+                    normal_val = GEN_SERVED_NORMAL.replace("{{connected_system}}", lbl)
+                    fire_val   = GEN_SERVED_GENMODE.replace("{{connected_system}}", lbl)
+                else:
+                    sys_b_name, prefix = GEN_CON_MAP[lbl]
+                    normal_val = replacements.get(f"{prefix}_normal_mode", "")
+                    fire_val   = replacements.get(f"{prefix}_fire_mode", "")
 
                 new_tr = deepcopy(template_tr_gen_con)
                 tcs = new_tr.findall(f".//{W}tc")
@@ -288,10 +293,13 @@ def expand_gen_served_system(doc, data):
                         continue
                     parent = para_el.getparent()
                     insert_idx = list(parent).index(para_el)
+                    # Insert one paragraph per served system, each on its own line
                     for i, name in enumerate(served_names):
                         new_p = deepcopy(para_el)
+                        # Remove all existing runs
                         for r in new_p.findall(f"{W}r"):
                             new_p.remove(r)
+                        # Ensure paragraph properties with indent
                         pPr = new_p.find(f"{W}pPr")
                         if pPr is None:
                             pPr = etree.SubElement(new_p, f"{W}pPr")
@@ -299,8 +307,15 @@ def expand_gen_served_system(doc, data):
                         ind = pPr.find(f"{W}ind")
                         if ind is None:
                             ind = etree.SubElement(pPr, f"{W}ind")
-                        ind.set(f"{W}left", "720")
+                        ind.set(f"{W}left", "360")
+                        # Add a single run with the bullet + name
                         r_el = etree.SubElement(new_p, f"{W}r")
+                        # Copy rPr from original if present
+                        orig_runs = para_el.findall(f"{W}r")
+                        if orig_runs:
+                            orig_rPr = orig_runs[0].find(f"{W}rPr")
+                            if orig_rPr is not None:
+                                r_el.insert(0, deepcopy(orig_rPr))
                         t_el = etree.SubElement(r_el, f"{W}t")
                         t_el.text = f"•  {name}"
                         t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
@@ -311,21 +326,31 @@ def expand_gen_served_system(doc, data):
     list_ph = "{{gen_served_list}}"
     for para in doc.paragraphs:
         if list_ph in para.text:
-            placeholder_para = para
-            placeholder_el = placeholder_para._element
+            placeholder_el = para._element
             parent = placeholder_el.getparent()
             insert_idx = list(parent).index(placeholder_el)
             for i, name in enumerate(served_names):
                 new_el = deepcopy(placeholder_el)
-                runs = new_el.findall(f".//{W}r")
-                if runs:
-                    t_els = runs[0].findall(f"{W}t")
-                    if t_els:
-                        t_els[0].text = f"•  {name}"
-                        t_els[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-                    for run in runs[1:]:
-                        for t in run.findall(f"{W}t"):
-                            t.text = ""
+                # Remove all runs and replace with a single bullet run
+                for r in new_el.findall(f"{W}r"):
+                    new_el.remove(r)
+                pPr = new_el.find(f"{W}pPr")
+                if pPr is None:
+                    pPr = etree.SubElement(new_el, f"{W}pPr")
+                    new_el.insert(0, pPr)
+                ind = pPr.find(f"{W}ind")
+                if ind is None:
+                    ind = etree.SubElement(pPr, f"{W}ind")
+                ind.set(f"{W}left", "360")
+                r_el = etree.SubElement(new_el, f"{W}r")
+                orig_runs = placeholder_el.findall(f"{W}r")
+                if orig_runs:
+                    orig_rPr = orig_runs[0].find(f"{W}rPr")
+                    if orig_rPr is not None:
+                        r_el.insert(0, deepcopy(orig_rPr))
+                t_el = etree.SubElement(r_el, f"{W}t")
+                t_el.text = f"•  {name}"
+                t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
                 parent.insert(insert_idx + i, new_el)
             parent.remove(placeholder_el)
             break

@@ -28,13 +28,16 @@ SYSTEMS = [
     {"key": "smoke_dampers", "label": "Smoke Dampers", "desc_ph": "smoke_dampers_description",    "int_ph": "smoke_dampers_integrations",  "matrix_prefix": "sdmpr", "tp_prefix": "sdmpr"},
     {"key": "fire_shutters", "label": "Fire Shutters", "desc_ph": "fire_shutters_description",    "int_ph": "fire_shutters_integrations",  "matrix_prefix": "fshtr", "tp_prefix": "fshtr"},
     {"key": "kitchen_hood",  "label": "Kitchen Hood",  "desc_ph": "hood_suppression_description", "int_ph": "hood_suppression_integrations","matrix_prefix": "ktchn", "tp_prefix": "ktchn"},
-    {"key": "water_mist",    "label": "Water Mist",    "desc_ph": "water_mist_description",       "int_ph": "water_mist_interconnections",  "matrix_prefix": "watmst", "tp_prefix": "watmst"},
     {"key": "elevator",      "label": "Elevator",      "desc_ph": "elevator_description",         "int_ph": "elevator_interconnections",   "matrix_prefix": "elev",  "tp_prefix": "elev"},
+    {"key": "water_mist",    "label": "Water Mist",    "desc_ph": "water_mist_description",       "int_ph": "water_mist_interconnections",  "matrix_prefix": "watmst", "tp_prefix": "watmst"},
 ]
 
 MONITORING_MATRIX_DEFAULTS = MATRIX_DEFAULTS["fire_alarm_monitoring"]
 
-CONTRACTOR_TYPES = [
+CONTACT_TYPES = [
+    "Owner/Owner's Representative",
+    "Fire Protection Engineer",
+    "Integrated Testing Coordinator",
     "Electrical Contractor", "Fire Alarm Contractor", "Sprinkler System Contractor",
     "Mechanical Contractor", "Security Contractor", "General Contractor",
 ]

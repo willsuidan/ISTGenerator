@@ -12,7 +12,6 @@ Domain-specific fire protection terms are whitelisted so they never flag.
 
 import re
 import tkinter as tk
-from tkinter import ttk
 from spellchecker import SpellChecker
 
 # ── Domain whitelist ────────────────────────────────────────────────────────
@@ -178,7 +177,7 @@ def attach_spellcheck(widget):
             widget.after_cancel(_timer[0])
         _timer[0] = widget.after(_DEBOUNCE_MS, lambda: _check_widget(widget))
 
-    widget.bind("<KeyRelease>", _schedule_check, add="+")
+    widget.bind("<KeyRelease>", lambda e=None: _schedule_check(e), add="+")
     widget.bind("<Button-3>", lambda e: _show_suggestions(e, widget), add="+")
 
     # Initial check (e.g. when loading from file)

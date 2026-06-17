@@ -18,7 +18,7 @@ from defaults import MATRIX_DEFAULTS, TP_DEFAULTS
 from constants import SYSTEMS, MONITORING_MATRIX_DEFAULTS
 
 
-def populate_test_procedures(doc, data):
+def populate_test_procedures(doc, data, replacements=None):
     WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     W = f"{{{WNS}}}"
 
@@ -180,6 +180,13 @@ def populate_test_procedures(doc, data):
             header_text = row_data.get("integration", f"Integration {i + 1}")
             tp_normal = row_data.get("tp_normal", "")
             tp_fire = row_data.get("tp_fire", "")
+            if replacements:
+                for ph_key, val in replacements.items():
+                    placeholder = f"{{{{{ph_key}}}}}"
+                    if placeholder in tp_normal:
+                        tp_normal = tp_normal.replace(placeholder, str(val) if val else "")
+                    if placeholder in tp_fire:
+                        tp_fire = tp_fire.replace(placeholder, str(val) if val else "")
 
             new_heading = deepcopy(template_heading)
             for para_el in new_heading.findall(f".//{W}p") or [new_heading]:
@@ -339,3 +346,120 @@ def _remove_absent_tp_blocks(doc, data):
                 if el.getparent() is not None:
                     body.remove(el)
             print("[TP] Removed Emergency Generator Power section (non-emergency generator)")
+
+def expand_gen_served_tp(doc, data):
+    """
+    Expand {{gen_integ_tp_norm_md}} and {{gen_integ_tp_gen_md}} placeholders
+    in table cells into separate bullet paragraphs — one per line.
+    Must be called AFTER replace_all so the placeholders contain the joined bullet text.
+    """
+    WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{WNS}}}"
+
+    gen_sys = data.get("systems", {}).get("generator", {})
+    emerg_rows = gen_sys.get("gen_served_matrix_rows", [])
+    if not emerg_rows:
+        return
+
+    def _bullets_for(field):
+        lines = []
+        for r in emerg_rows:
+            text = r.get(field, "").strip()
+            for l in text.split("\n"):
+                l = l.strip().lstrip("- •").strip()
+                if l:
+                    lines.append(l)
+        return lines
+
+    norm_lines = _bullets_for("tp_normal")
+    fire_lines = _bullets_for("tp_fire")
+
+    def _expand_in_cell(cell_el, placeholder, lines):
+        for para_el in list(cell_el.findall(f".//{W}p")):
+            full = "".join(t.text or "" for t in para_el.findall(f".//{W}t"))
+            if placeholder not in full:
+                continue
+            parent = para_el.getparent()
+            insert_idx = list(parent).index(para_el)
+            first_run = para_el.find(f".//{W}r")
+            rPr_source = first_run.find(f"{W}rPr") if first_run is not None else None
+            for i, line in enumerate(lines if lines else [""]):
+                new_p = deepcopy(para_el)
+                for r in new_p.findall(f"{W}r"):
+                    new_p.remove(r)
+                r_el = etree.SubElement(new_p, f"{W}r")
+                if rPr_source is not None:
+                    r_el.insert(0, deepcopy(rPr_source))
+                t_el = etree.SubElement(r_el, f"{W}t")
+                t_el.text = f"•  {line}" if line else ""
+                t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                parent.insert(insert_idx + i, new_p)
+            parent.remove(para_el)
+            return True
+        return False
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                _expand_in_cell(cell._element, "__GEN_TP_NORM_EXPAND__", norm_lines)
+                _expand_in_cell(cell._element, "__GEN_TP_FIRE_EXPAND__", fire_lines)
+
+def populate_elevator_action_table(doc, data):
+    """Clone the {{elevator_action}} / {{elevator_action_desc}} placeholder row
+    once per entry in data["systems"]["elevator"]["elev_actions"].
+
+    The template contains a 2-column table with a single data row:
+        | {{elevator_action}} | {{elevator_action_desc}} |
+
+    Each entry is {"action": str, "desc": str}.
+    If the list is empty the placeholder row is left in place so Word
+    doesn't break, but its text is cleared.
+    """
+    from copy import deepcopy
+    from word_gen_core import replace_in_paragraph
+
+    elev_actions = (
+        data.get("systems", {})
+            .get("elevator", {})
+            .get("elev_actions", [])
+    )
+
+    # Locate the table containing the placeholder row
+    target_table = None
+    placeholder_row = None
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = "".join(cell.text for cell in row.cells)
+            if "elevator_action" in row_text and "elevator_action_desc" in row_text:
+                target_table = table
+                placeholder_row = row
+                break
+        if target_table:
+            break
+
+    if target_table is None or placeholder_row is None:
+        return
+
+    if not elev_actions:
+        # Clear the placeholder row rather than leaving raw {{...}} text
+        replace_in_paragraph
+        for cell in placeholder_row.cells:
+            for para in cell.paragraphs:
+                replace_in_paragraph(para, {
+                    "elevator_action": "",
+                    "elevator_action_desc": "",
+                })
+        return
+
+    template_tr = deepcopy(placeholder_row._tr)
+    placeholder_row._tr.getparent().remove(placeholder_row._tr)
+
+    for entry in elev_actions:
+        new_tr = deepcopy(template_tr)
+        target_table._tbl.append(new_tr)
+        for cell in target_table.rows[-1].cells:
+            for para in cell.paragraphs:
+                replace_in_paragraph(para, {
+                    "elevator_action":      entry.get("action", ""),
+                    "elevator_action_desc": entry.get("desc", ""),
+                })

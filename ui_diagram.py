@@ -15,6 +15,7 @@ except ImportError:
     _PIL_AVAILABLE = False
 
 from constants import SYSTEMS
+from ui_scroll import bind_mousewheel
 
 
 class DiagramMixin:
@@ -68,6 +69,7 @@ class DiagramMixin:
         hbar.config(command=self._diag_canvas.xview)
         vbar.config(command=self._diag_canvas.yview)
         self._diag_canvas.pack(fill="both", expand=True)
+        bind_mousewheel(self._diag_canvas)
 
         # ── Internal state ─────────────────────────────────────
         # Each box: {id, x, y, w, h, title, subtitles:[], color, canvas_ids:[]}
@@ -272,7 +274,8 @@ class DiagramMixin:
         self._diag_redraw_box(box)
 
     def _diag_refresh_from_matrix(self):
-        """Sync boxes from the integration matrix — adds missing systems, updates subtitles."""
+        """Sync boxes from the integration matrix — adds missing systems, updates subtitles.
+        Custom boxes (ids not matching a known system key) are never touched."""
         SYSTEM_COLORS = {
             "fire_alarm":       "#ffcccc",
             "sprinkler":        "#d0f0d0",
@@ -305,6 +308,11 @@ class DiagramMixin:
             "kitchen_hood":     "KITCHEN HOOD",
             "elevator":         "ELEVATOR",
         }
+
+        # All ids that are ever auto-managed — anything else is a custom box and
+        # must never be removed or modified by this function.
+        AUTO_IDS = set(LABEL_MAP.keys()) | {"fire_alarm", "monitoring", "pre_action_panel"}
+
         existing_ids = {b["id"] for b in self._diag_boxes}
         auto_x, auto_y = 880, 260
         COL_W, ROW_H = 200, 120
@@ -345,7 +353,9 @@ class DiagramMixin:
                         box["w"], box["h"] = box_w, box_h
                     self._diag_redraw_box(box)
             else:
-                n_placed = len([b for b in self._diag_boxes if b["id"] not in ("fire_alarm", "monitoring")])
+                # Count only auto-managed placed boxes for grid positioning
+                n_placed = len([b for b in self._diag_boxes
+                                if b["id"] in AUTO_IDS and b["id"] not in ("fire_alarm", "monitoring")])
                 col = n_placed % 2
                 row = n_placed // 2
                 self._diag_add_box(
@@ -358,7 +368,7 @@ class DiagramMixin:
                 )
 
         # Remove boxes for systems that are no longer selected
-        # (never remove fire_alarm or monitoring — they're always present)
+        # (never remove fire_alarm, monitoring, or any custom box)
         c = self._diag_canvas
 
         # Handle pre_action_panel separately — driven by checkbox not selector
@@ -382,7 +392,8 @@ class DiagramMixin:
                     box["w"], box["h"] = pap_w, pap_h
                     self._diag_redraw_box(box)
             else:
-                n_placed = len([b for b in self._diag_boxes if b["id"] not in ("fire_alarm", "monitoring")])
+                n_placed = len([b for b in self._diag_boxes
+                                if b["id"] in AUTO_IDS and b["id"] not in ("fire_alarm", "monitoring")])
                 col = n_placed % 2
                 row = n_placed // 2
                 self._diag_add_box(
@@ -404,6 +415,9 @@ class DiagramMixin:
         effective_selected = selected_keys | ({"pre_action_panel"} if pap_present else set())
         for box in list(self._diag_boxes):
             if box["id"] in ("fire_alarm", "monitoring"):
+                continue
+            # Never touch custom boxes — only remove auto-managed system boxes
+            if box["id"] not in AUTO_IDS:
                 continue
             if box["id"] not in effective_selected:
                 for cid in box["canvas_ids"]:

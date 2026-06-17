@@ -11,13 +11,108 @@ from tkinter import ttk
 from spellcheck import attach_spellcheck
 from defaults import (
     SYSTEM_DEFAULTS, SPRINKLER_SUBTYPE_ORDER, PRE_ACTION_SUBTYPE_ORDER, get_sprinkler_text,
-    APPB_DEFAULTS, APPB_DESC_DEFAULTS, MATRIX_DEFAULTS, TP_DEFAULTS,
-    GEN_SERVED_NORMAL, GEN_SERVED_GENMODE, GEN_SERVED_TP_NORMAL, GEN_SERVED_TP_GENMODE,
+    APPB_DEFAULTS, APPB_DESC_DEFAULTS, APPB_SW_TYPE_DEFAULTS, MATRIX_DEFAULTS, TP_DEFAULTS,
 )
-from constants import SYSTEMS, MONITORING_MATRIX_DEFAULTS, LOREM
+from constants import MONITORING_MATRIX_DEFAULTS, LOREM
+from ui_scroll import bind_mousewheel, enable_text_autoresize
 
 
 class SystemTabMixin:
+    @staticmethod
+    def _attach_entry_placeholder(entry, placeholder, color="#999999"):
+        """
+        Show grey hint text in an empty ttk.Entry; clears on focus and
+        reappears on focus-out if the field is left empty.
+
+        get()/insert()/delete() are wrapped on this instance so the
+        placeholder text is never returned/treated as real content by
+        callers elsewhere (e.g. data gather/save, report generation).
+        """
+        normal_fg = entry.cget("foreground")
+        orig_get    = entry.get
+        orig_insert = entry.insert
+        orig_delete = entry.delete
+
+        def _show_placeholder():
+            orig_insert(0, placeholder)
+            entry.configure(foreground=color)
+            entry._is_placeholder = True
+
+        def _hide_placeholder():
+            if getattr(entry, "_is_placeholder", False):
+                orig_delete(0, "end")
+                entry.configure(foreground=normal_fg)
+                entry._is_placeholder = False
+
+        def _get():
+            if getattr(entry, "_is_placeholder", False):
+                return ""
+            return orig_get()
+
+        def _insert(index, text):
+            if text == "":
+                return
+            _hide_placeholder()
+            orig_insert(index, text)
+
+        def _delete(*args):
+            orig_delete(*args)
+            entry._is_placeholder = False
+            entry.configure(foreground=normal_fg)
+            if not orig_get() and entry.focus_get() is not entry:
+                _show_placeholder()
+
+        def _on_focus_in(event=None):
+            _hide_placeholder()
+
+        def _on_focus_out(event=None):
+            if not orig_get():
+                _show_placeholder()
+
+        entry.get    = _get
+        entry.insert = _insert
+        entry.delete = _delete
+        entry.bind("<FocusIn>",  _on_focus_in,  add="+")
+        entry.bind("<FocusOut>", _on_focus_out, add="+")
+
+        _show_placeholder()
+
+    @staticmethod
+    def _enable_tree_drag_reorder(tree, data_list, refresh_fn):
+        """
+        Allow rows of a ttk.Treeview backed by `data_list` (a list of dicts,
+        one per row in display order) to be reordered by click-and-drag.
+        `refresh_fn()` redraws the tree (and any live preview) after each move.
+        """
+        drag = {"index": None}
+
+        def _on_press(event):
+            row = tree.identify_row(event.y)
+            drag["index"] = tree.index(row) if row else None
+
+        def _on_motion(event):
+            src = drag["index"]
+            if src is None:
+                return
+            row = tree.identify_row(event.y)
+            if not row:
+                return
+            dst = tree.index(row)
+            if dst != src:
+                data_list.insert(dst, data_list.pop(src))
+                drag["index"] = dst
+                refresh_fn()
+                children = tree.get_children()
+                if 0 <= dst < len(children):
+                    tree.selection_set(children[dst])
+
+        def _on_release(event):
+            drag["index"] = None
+
+        tree.bind("<ButtonPress-1>",  _on_press,   add="+")
+        tree.bind("<B1-Motion>",      _on_motion,  add="+")
+        tree.bind("<ButtonRelease-1>", _on_release, add="+")
+
     def _build_system_tab(self, sys_info):
         key   = sys_info["key"]
         label = sys_info["label"]
@@ -45,6 +140,7 @@ class SystemTabMixin:
             self.root.after(0, _refresh_scroll)
 
         tab_canvas.bind("<Configure>", _on_canvas_resize)
+        bind_mousewheel(tab_canvas)
 
         # Top section: text boxes left, right panel right
         content = ttk.Frame(content_wrap)
@@ -119,6 +215,7 @@ class SystemTabMixin:
             self.gen_check_inner = ttk.Frame(right)
             self.gen_check_inner.pack(fill="both", expand=True, pady=(0, 4))
             self.gen_served_vars = {}
+            self.gen_custom_served = []  # list of {"label": str, "var": BooleanVar}
             GEN_DISPLAY = {
                 "Fire Alarm": "Fire Alarm System",
                 "Fire Pump": "Fire Pump", "Maglocks": "Electromagnetic Locks",
@@ -128,6 +225,33 @@ class SystemTabMixin:
                 "Water Mist": "Water Mist System", "Elevator": "Elevator",
             }
             self._gen_display = GEN_DISPLAY
+
+            # ── Custom served system entry ────────────────────────────────
+            custom_add_frame = ttk.Frame(right)
+            custom_add_frame.pack(fill="x", pady=(2, 0))
+            self._gen_custom_entry = ttk.Entry(custom_add_frame, width=18)
+            self._gen_custom_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+            def _add_custom_served(event=None):
+                label = self._gen_custom_entry.get().strip()
+                if not label:
+                    return
+                # Prevent duplicates
+                existing = [c["label"] for c in self.gen_custom_served]
+                if label in existing or label in GEN_DISPLAY:
+                    return
+                var = tk.BooleanVar(value=True)
+                self.gen_custom_served.append({"label": label, "var": var})
+                self._gen_custom_entry.delete(0, "end")
+                _refresh_gen_checklist()
+
+            self._gen_custom_btn = ttk.Button(custom_add_frame, text="+", width=2,
+                                              command=_add_custom_served)
+            self._gen_custom_btn.pack(side="left")
+            self._gen_custom_entry.bind("<Return>", _add_custom_served)
+            # Start disabled (non-emergency is the default)
+            self._gen_custom_entry.state(["disabled"])
+            self._gen_custom_btn.state(["disabled"])
 
         if key == "pre_action":
             # Plain frame — grows naturally to show all content
@@ -238,7 +362,6 @@ class SystemTabMixin:
 
             # ── Pre-Action live description preview ───────────────
             def _update_preac_desc(event=None):
-                dt = getattr(self, "_fa_desc_text_ref", None)
                 # Get desc_text from local closure (set after right panel)
                 _dt = desc_text if "desc_text" in dir() else None
                 target = _dt
@@ -347,7 +470,7 @@ class SystemTabMixin:
             self.pre_action_panel_var.trace_add("write", lambda *_: _update_preac_desc())
 
         if key == "elevator":
-            right = ttk.Frame(content, width=220)
+            right = ttk.Frame(content, width=280)
             right.pack(side="right", fill="y", padx=(8, 0))
             right.pack_propagate(False)
             ttk.Label(right, text="Elevator Details", font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
@@ -360,12 +483,14 @@ class SystemTabMixin:
                         width=6, command=lambda: _update_elev_preview()).grid(row=0, column=1, sticky="w", pady=4)
 
             ttk.Label(elev_frame, text="Primary Recall:").grid(row=1, column=0, sticky="w", padx=(0, 4), pady=4)
-            self.elev_primary_floor = ttk.Entry(elev_frame, width=10)
+            self.elev_primary_floor = ttk.Entry(elev_frame, width=18)
             self.elev_primary_floor.grid(row=1, column=1, sticky="we", pady=4)
+            self._attach_entry_placeholder(self.elev_primary_floor, "e.g. Ground Floor")
 
             ttk.Label(elev_frame, text="Alternate Recall:").grid(row=2, column=0, sticky="w", padx=(0, 4), pady=4)
-            self.elev_alternate_floor = ttk.Entry(elev_frame, width=10)
+            self.elev_alternate_floor = ttk.Entry(elev_frame, width=18)
             self.elev_alternate_floor.grid(row=2, column=1, sticky="we", pady=4)
+            self._attach_entry_placeholder(self.elev_alternate_floor, "e.g. Second Floor")
 
             elev_frame.columnconfigure(1, weight=1)
 
@@ -400,6 +525,29 @@ class SystemTabMixin:
                 # Refresh Appendix B rows to match elevator count
                 self._refresh_elevator_appb_rows()
 
+                # Live-update {{elev_prim_rcl}} / {{elev_alt_rcl}} placeholders in the
+                # Integrations Matrix test-procedure bullet boxes
+                try:
+                    rows_ref = matrix_rows
+                except NameError:
+                    rows_ref = None
+                if rows_ref is not None:
+                    prev_prim = getattr(self, "_elev_prim_disp_prev", "{{elev_prim_rcl}}")
+                    prev_alt  = getattr(self, "_elev_alt_disp_prev", "{{elev_alt_rcl}}")
+                    if prev_prim != prim or prev_alt != alt:
+                        for row in rows_ref:
+                            for tw_key in ("tp_normal", "tp_fire"):
+                                tw = row.get(tw_key)
+                                if tw is None:
+                                    continue
+                                content = tw.get("1.0", "end-1c")
+                                new_content = content.replace(prev_prim, prim).replace(prev_alt, alt)
+                                if new_content != content:
+                                    tw.delete("1.0", "end")
+                                    tw.insert("1.0", new_content)
+                    self._elev_prim_disp_prev = prim
+                    self._elev_alt_disp_prev  = alt
+
             self._update_elev_preview = _update_elev_preview
             self.elev_primary_floor.bind("<KeyRelease>", _update_elev_preview)
             self.elev_alternate_floor.bind("<KeyRelease>", _update_elev_preview)
@@ -418,6 +566,7 @@ class SystemTabMixin:
             wm_rid = wm_rcan.create_window((0, 0), window=wm_rinner, anchor="nw")
             wm_rinner.bind("<Configure>", lambda e: wm_rcan.configure(scrollregion=wm_rcan.bbox("all")))
             wm_rcan.bind("<Configure>", lambda e: wm_rcan.itemconfig(wm_rid, width=e.width))
+            bind_mousewheel(wm_rcan)
 
             ttk.Label(wm_rinner, text="Water Mist Details", font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
             ttk.Label(wm_rinner, text="Protected Areas", font=("", 8, "bold")).pack(anchor="w", pady=(0, 3))
@@ -674,7 +823,10 @@ class SystemTabMixin:
             ttk.Button(stnd_vlv_btn_f, text="Remove", command=_remove_stnd_vlv).pack(side="left")
             self._refresh_stnd_vlv_tree = _refresh_stnd_vlv_tree
 
-        ttk.Label(left, text="System Overview Description", font=("", 9, "bold")).pack(anchor="w", pady=(0, 3))
+        desc_hdr = ttk.Frame(left)
+        desc_hdr.pack(anchor="w", pady=(0, 3))
+        ttk.Label(desc_hdr, text="System Overview Description", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(desc_hdr, text="  (Section 1.3)", foreground="gray", font=("", 8)).pack(side="left")
         df = ttk.Frame(left)
         df.pack(fill="both", expand=True, pady=(0, 8))
         ds = ttk.Scrollbar(df, orient="vertical")
@@ -695,7 +847,10 @@ class SystemTabMixin:
         else:
             desc_text.insert("1.0", SYSTEM_DEFAULTS.get(key, {}).get("description", LOREM))
 
-        ttk.Label(left, text="System Integrations & Functional Objectives", font=("", 9, "bold")).pack(anchor="w", pady=(0, 3))
+        integ_hdr = ttk.Frame(left)
+        integ_hdr.pack(anchor="w", pady=(0, 3))
+        ttk.Label(integ_hdr, text="System Integrations & Functional Objectives", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(integ_hdr, text="  (Section 1.3)", foreground="gray", font=("", 8)).pack(side="left")
         if_ = ttk.Frame(left)
         if_.pack(fill="both", expand=True)
         is_ = ttk.Scrollbar(if_, orient="vertical")
@@ -842,6 +997,8 @@ class SystemTabMixin:
                 selected = [v.get() for v in self.sys_selector_vars if v.get()]
                 eligible = [s for s in selected if s not in ("Generator", "Sprinkler", "Standpipe")]
                 is_emergency = self.gen_class_var.get() == "emergency"
+
+                # ── Built-in system checkboxes ────────────────────────────
                 for lbl in eligible:
                     var = tk.BooleanVar(value=(lbl in previously_checked))
                     self.gen_served_vars[lbl] = var
@@ -851,14 +1008,57 @@ class SystemTabMixin:
                     self._gen_served_checkbuttons.append(cb)
                     if not is_emergency:
                         cb.state(["disabled"])
+
+                # ── Custom system rows (checkbox + label + ✕) ─────────────
+                for entry in list(self.gen_custom_served):
+                    lbl = entry["label"]
+                    var = entry["var"]
+                    # Restore checked state across rebuilds
+                    if lbl in previously_checked:
+                        var.set(True)
+                    self.gen_served_vars[lbl] = var
+                    row_f = ttk.Frame(self.gen_check_inner)
+                    row_f.pack(anchor="w", fill="x", pady=1)
+                    cb = ttk.Checkbutton(row_f, text=lbl, variable=var,
+                                         command=lambda: (_update_gen_desc(), self._refresh_gen_served_tab()))
+                    cb.pack(side="left")
+                    self._gen_served_checkbuttons.append(cb)
+                    if not is_emergency:
+                        cb.state(["disabled"])
+
+                    def _make_remove(e=entry, rf=row_f):
+                        def _remove():
+                            lbl_r = e["label"]
+                            self.gen_custom_served.remove(e)
+                            if lbl_r in self.gen_served_vars:
+                                del self.gen_served_vars[lbl_r]
+                            rf.destroy()
+                            _update_gen_desc()
+                            self._refresh_gen_served_tab()
+                        return _remove
+
+                    rm = ttk.Button(row_f, text="✕", width=2,
+                                    command=_make_remove())
+                    rm.pack(side="left", padx=(4, 0))
+                    if not is_emergency:
+                        rm.state(["disabled"])
+                    self._gen_served_checkbuttons.append(rm)
+
                 _update_gen_desc()
                 self._refresh_gen_served_tab()
 
             def _update_served_state(*_):
-                """Gray out served-system checkboxes when non-emergency is selected."""
+                """Gray out served-system checkboxes and custom entry when non-emergency."""
                 is_emergency = self.gen_class_var.get() == "emergency"
                 for cb in self._gen_served_checkbuttons:
                     cb.state(["!disabled"] if is_emergency else ["disabled"])
+                state = ["!disabled"] if is_emergency else ["disabled"]
+                entry = getattr(self, "_gen_custom_entry", None)
+                btn   = getattr(self, "_gen_custom_btn", None)
+                if entry:
+                    entry.state(state)
+                if btn:
+                    btn.state(state)
                 self._refresh_gen_served_tab()
 
             self.gen_class_var.trace_add("write", _update_served_state)
@@ -884,7 +1084,10 @@ class SystemTabMixin:
             text_widget.insert("1.0", "\n".join(display_lines))
         if key != "fire_alarm":
             ttk.Separator(content_wrap, orient="horizontal").pack(fill="x", pady=(12, 4))
-            ttk.Label(content_wrap, text="Integrations Matrix", font=("", 9, "bold")).pack(anchor="w", pady=(0, 2))
+            matrix_hdr = ttk.Frame(content_wrap)
+            matrix_hdr.pack(anchor="w", pady=(0, 2))
+            ttk.Label(matrix_hdr, text="Integrations Matrix", font=("", 9, "bold")).pack(side="left")
+            ttk.Label(matrix_hdr, text="  (Sections 2 & 3)", foreground="gray", font=("", 8)).pack(side="left")
             ttk.Label(content_wrap, text=f"Fire Alarm / {label}", font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
 
             # Column headers
@@ -892,6 +1095,25 @@ class SystemTabMixin:
             rows_frame = ttk.Frame(content_wrap)
             rows_frame.pack(fill="x")
             matrix_rows = []   # list of dicts with Text widgets
+
+            def _reorder_matrix():
+                for r in matrix_rows:
+                    sep_w = r.get("_sep")
+                    rf    = r.get("_tp_frame")
+                    if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                        sep_w.pack_forget()
+                    if rf and rf.winfo_exists():
+                        rf.pack_forget()
+                for i, r in enumerate(matrix_rows):
+                    sep_w = r.get("_sep")
+                    rf    = r.get("_tp_frame")
+                    if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                        if i == 0:
+                            sep_w.pack_forget()
+                        else:
+                            sep_w.pack(fill="x", pady=(16, 8))
+                    if rf and rf.winfo_exists():
+                        rf.pack(fill="x", pady=(0, 6))
 
             def _add_matrix_row(integ="", normal="", fire="", tp_normal="", tp_fire=""):
                 # Separator only between rows (not before the first)
@@ -901,8 +1123,10 @@ class SystemTabMixin:
                     sep.pack_forget()
 
                 # Single grid frame: col0=integration(small) | col1=normal | col2=fire
-                row_f = ttk.Frame(rows_frame)
-                row_f.pack(fill="x", pady=(0, 6))
+                row_wrap = tk.Frame(rows_frame, bd=2, relief="flat", highlightthickness=0)
+                row_wrap.pack(fill="x", pady=(0, 6))
+                row_f = ttk.Frame(row_wrap)
+                row_f.pack(fill="x")
                 row_f.columnconfigure(0, weight=0, minsize=160)
                 row_f.columnconfigure(1, weight=1, uniform="main_col")
                 row_f.columnconfigure(2, weight=1, uniform="main_col")
@@ -920,9 +1144,52 @@ class SystemTabMixin:
 
                 widgets["_sep"] = sep if matrix_rows else None
 
-                # Col 0 — Integration name + ✕
+                # Col 0 — Integration name + drag handle + ✕
                 integ_outer = ttk.Frame(row_f)
-                integ_outer.grid(row=0, column=0, rowspan=3, sticky="nwe", padx=(0, 6))
+                integ_outer.grid(row=0, column=0, rowspan=5, sticky="nwe", padx=(0, 6))
+
+                drag_hdr = ttk.Frame(integ_outer)
+                drag_hdr.pack(fill="x", pady=(0, 2))
+                drag_lbl = tk.Label(drag_hdr, text="≡", foreground="#aaaaaa",
+                                    cursor="sb_v_double_arrow", font=("", 13))
+                drag_lbl.pack(side="left")
+
+                _drag_state = {"start_y": None, "src_idx": None}
+
+                def _drag_start(event, w=widgets):
+                    _drag_state["start_y"] = event.y_root
+                    _drag_state["src_idx"] = matrix_rows.index(w)
+                    drag_lbl.configure(foreground="#4a90d9")
+                    row_wrap.configure(relief="solid", bd=2,
+                                       highlightbackground="#4a90d9",
+                                       highlightthickness=2, bg="#dce8ff")
+
+                def _drag_motion(event, w=widgets):
+                    if _drag_state["src_idx"] is None:
+                        return
+                    dy = event.y_root - _drag_state["start_y"]
+                    if abs(dy) < 60:
+                        return
+                    step = 1 if dy > 0 else -1
+                    src = _drag_state["src_idx"]
+                    dst = max(0, min(len(matrix_rows) - 1, src + step))
+                    if dst != src:
+                        matrix_rows.insert(dst, matrix_rows.pop(src))
+                        _drag_state["src_idx"] = dst
+                        _drag_state["start_y"] = event.y_root
+                        _reorder_matrix()
+
+                def _drag_end(event):
+                    _drag_state["start_y"] = None
+                    _drag_state["src_idx"] = None
+                    drag_lbl.configure(foreground="#aaaaaa")
+                    row_wrap.configure(relief="flat", bd=0,
+                                       highlightthickness=0, bg="")
+
+                drag_lbl.bind("<ButtonPress-1>",   _drag_start)
+                drag_lbl.bind("<B1-Motion>",        _drag_motion)
+                drag_lbl.bind("<ButtonRelease-1>",  _drag_end)
+
                 ttk.Label(integ_outer, text="Integration", font=("", 8), foreground="gray").pack(anchor="w")
                 integ_t = tk.Text(integ_outer, wrap="none", height=1, width=32, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 integ_t.insert("1.0", integ)
@@ -931,44 +1198,45 @@ class SystemTabMixin:
                 widgets["integration"] = integ_t
 
                 # Col 1 — Normal Mode description + TP
-                nm_outer = ttk.Frame(row_f)
-                nm_outer.grid(row=0, column=1, sticky="nswe", padx=(0, 4))
-                ttk.Label(nm_outer, text="Normal Mode", font=("", 8), foreground="gray").pack(anchor="w")
-                normal_t = tk.Text(nm_outer, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                ttk.Label(row_f, text="Normal Mode", font=("", 8), foreground="gray").grid(row=0, column=1, sticky="w", padx=(0, 4))
+                normal_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 normal_t.insert("1.0", normal)
-                normal_t.pack(fill="both", expand=True)
+                normal_t.grid(row=1, column=1, sticky="new", padx=(0, 4))
                 attach_spellcheck(normal_t)
-                ttk.Label(nm_outer, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-                tp_normal_t = tk.Text(nm_outer, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                enable_text_autoresize(normal_t, min_height=3, max_height=12)
+                ttk.Label(row_f, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").grid(row=2, column=1, sticky="w", padx=(0, 4), pady=(6, 0))
+                tp_normal_t = tk.Text(row_f, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 _insert_bullets(tp_normal_t, tp_normal)
-                tp_normal_t.pack(fill="both", expand=True)
+                tp_normal_t.grid(row=3, column=1, sticky="new", padx=(0, 4))
                 attach_spellcheck(tp_normal_t)
-                ttk.Button(nm_outer, text="+ New Bullet",
+                enable_text_autoresize(tp_normal_t, min_height=5, max_height=20)
+                ttk.Button(row_f, text="+ New Bullet",
                            command=lambda t=tp_normal_t: (t.insert(tk.INSERT, "\n• ") if t.get("1.0", "end-1c").strip() else t.insert("1.0", "• "))
-                           ).pack(anchor="w", pady=(2, 0))
+                           ).grid(row=4, column=1, sticky="w", padx=(0, 4), pady=(2, 0))
                 widgets["normal_mode"] = normal_t
 
                 # Col 2 — Fire Mode description + TP
-                fm_outer = ttk.Frame(row_f)
-                fm_outer.grid(row=0, column=2, sticky="nswe")
-                ttk.Label(fm_outer, text="Fire Mode", font=("", 8), foreground="gray").pack(anchor="w")
-                fire_t = tk.Text(fm_outer, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                ttk.Label(row_f, text="Fire Mode", font=("", 8), foreground="gray").grid(row=0, column=2, sticky="w")
+                fire_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 fire_t.insert("1.0", fire)
-                fire_t.pack(fill="both", expand=True)
+                fire_t.grid(row=1, column=2, sticky="new")
                 attach_spellcheck(fire_t)
-                ttk.Label(fm_outer, text="Test Procedure — Fire Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-                tp_fire_t = tk.Text(fm_outer, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                enable_text_autoresize(fire_t, min_height=3, max_height=12)
+                ttk.Label(row_f, text="Test Procedure — Fire Mode:", font=("", 8), foreground="gray").grid(row=2, column=2, sticky="w", pady=(6, 0))
+                tp_fire_t = tk.Text(row_f, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 _insert_bullets(tp_fire_t, tp_fire)
-                tp_fire_t.pack(fill="both", expand=True)
+                tp_fire_t.grid(row=3, column=2, sticky="new")
                 attach_spellcheck(tp_fire_t)
-                ttk.Button(fm_outer, text="+ New Bullet",
+                enable_text_autoresize(tp_fire_t, min_height=5, max_height=20)
+                ttk.Button(row_f, text="+ New Bullet",
                            command=lambda t=tp_fire_t: (t.insert(tk.INSERT, "\n• ") if t.get("1.0", "end-1c").strip() else t.insert("1.0", "• "))
-                           ).pack(anchor="w", pady=(2, 0))
+                           ).grid(row=4, column=2, sticky="w", pady=(2, 0))
                 widgets["fire_mode"] = fire_t
 
                 widgets["tp_normal"]  = tp_normal_t
                 widgets["tp_fire"]    = tp_fire_t
-                widgets["_tp_frame"]  = row_f   # same frame, no separate tp_f
+                widgets["_tp_frame"]  = row_wrap
+                widgets["_row_wrap"]  = row_wrap
 
                 matrix_rows.append(widgets)
                 self.root.after(0, _refresh_scroll)
@@ -992,12 +1260,34 @@ class SystemTabMixin:
 
         elif key == "fire_alarm":
             ttk.Separator(content_wrap, orient="horizontal").pack(fill="x", pady=(12, 4))
-            ttk.Label(content_wrap, text="Integrations Matrix", font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
+            fa_matrix_hdr = ttk.Frame(content_wrap)
+            fa_matrix_hdr.pack(anchor="w", pady=(0, 6))
+            ttk.Label(fa_matrix_hdr, text="Integrations Matrix", font=("", 9, "bold")).pack(side="left")
+            ttk.Label(fa_matrix_hdr, text="  (Sections 2 & 3)", foreground="gray", font=("", 8)).pack(side="left")
             ttk.Label(content_wrap, text="Fire Alarm / Monitoring Station", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
             mon_rows_frame = ttk.Frame(content_wrap)
             mon_rows_frame.pack(fill="x", pady=(0, 4))
             mon_rows = []
+
+            def _reorder_mon():
+                for r in mon_rows:
+                    sep_w = r.get("_sep")
+                    rf    = r.get("_tp_frame")
+                    if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                        sep_w.pack_forget()
+                    if rf and rf.winfo_exists():
+                        rf.pack_forget()
+                for i, r in enumerate(mon_rows):
+                    sep_w = r.get("_sep")
+                    rf    = r.get("_tp_frame")
+                    if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                        if i == 0:
+                            sep_w.pack_forget()
+                        else:
+                            sep_w.pack(fill="x", pady=(16, 8))
+                    if rf and rf.winfo_exists():
+                        rf.pack(fill="x", pady=(0, 6))
 
             def _add_mon_row(integ="", normal="", fire="", tp_normal="", tp_fire=""):
                 # Separator only between rows (not before the first)
@@ -1007,17 +1297,19 @@ class SystemTabMixin:
                     sep.pack_forget()
 
                 # Single grid frame: col0=integration(small) | col1=normal | col2=fire
-                row_f = ttk.Frame(mon_rows_frame)
-                row_f.pack(fill="x", pady=(0, 6))
+                row_wrap = tk.Frame(mon_rows_frame, bd=2, relief="flat", highlightthickness=0)
+                row_wrap.pack(fill="x", pady=(0, 6))
+                row_f = ttk.Frame(row_wrap)
+                row_f.pack(fill="x")
                 row_f.columnconfigure(0, weight=0, minsize=160)
                 row_f.columnconfigure(1, weight=1, uniform="main_col")
                 row_f.columnconfigure(2, weight=1, uniform="main_col")
                 widgets = {}
 
-                def _remove(rf=row_f, r=widgets):
+                def _remove(rf=row_f, r=widgets, rw=row_wrap):
                     if r in mon_rows:
                         mon_rows.remove(r)
-                    rf.destroy()
+                    rw.destroy()
                     if "_sep" in r and r["_sep"] is not None:
                         s = r["_sep"]
                         if hasattr(s, "winfo_exists") and s.winfo_exists():
@@ -1025,9 +1317,51 @@ class SystemTabMixin:
 
                 widgets["_sep"] = sep if mon_rows else None
 
-                # Col 0 — Integration name + ✕
+                # Col 0 — Integration name + drag handle + ✕
                 integ_outer = ttk.Frame(row_f)
-                integ_outer.grid(row=0, column=0, rowspan=3, sticky="nwe", padx=(0, 6))
+                integ_outer.grid(row=0, column=0, rowspan=5, sticky="nwe", padx=(0, 6))
+
+                drag_hdr = ttk.Frame(integ_outer)
+                drag_hdr.pack(fill="x", pady=(0, 2))
+                drag_lbl = tk.Label(drag_hdr, text="≡", foreground="#aaaaaa",
+                                    cursor="fleur", font=("", 12))
+                drag_lbl.pack(side="left")
+
+                _drag_state = {"start_y": None, "src_idx": None}
+
+                def _drag_start(event, w=widgets):
+                    _drag_state["start_y"] = event.y_root
+                    _drag_state["src_idx"] = mon_rows.index(w)
+                    drag_lbl.configure(foreground="#4a90d9")
+                    row_wrap.configure(relief="solid", bd=2,
+                                       highlightbackground="#4a90d9",
+                                       highlightthickness=2, bg="#dce8ff")
+
+                def _drag_motion(event, w=widgets):
+                    if _drag_state["src_idx"] is None:
+                        return
+                    dy = event.y_root - _drag_state["start_y"]
+                    if abs(dy) < 20:
+                        return
+                    src = _drag_state["src_idx"]
+                    dst = src - 1 if dy < 0 else src + 1
+                    if 0 <= dst < len(mon_rows):
+                        mon_rows[src], mon_rows[dst] = mon_rows[dst], mon_rows[src]
+                        _drag_state["src_idx"] = dst
+                        _drag_state["start_y"] = event.y_root
+                        _reorder_mon()
+
+                def _drag_end(event):
+                    _drag_state["start_y"] = None
+                    _drag_state["src_idx"] = None
+                    drag_lbl.configure(foreground="#aaaaaa")
+                    row_wrap.configure(relief="flat", bd=0,
+                                       highlightthickness=0, bg="")
+
+                drag_lbl.bind("<ButtonPress-1>",   _drag_start)
+                drag_lbl.bind("<B1-Motion>",        _drag_motion)
+                drag_lbl.bind("<ButtonRelease-1>",  _drag_end)
+
                 ttk.Label(integ_outer, text="Integration", font=("", 8), foreground="gray").pack(anchor="w")
                 integ_t = tk.Text(integ_outer, wrap="none", height=1, width=32, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 integ_t.insert("1.0", integ)
@@ -1036,44 +1370,45 @@ class SystemTabMixin:
                 widgets["integration"] = integ_t
 
                 # Col 1 — Normal Mode description + TP
-                nm_outer = ttk.Frame(row_f)
-                nm_outer.grid(row=0, column=1, sticky="nswe", padx=(0, 4))
-                ttk.Label(nm_outer, text="Normal Mode", font=("", 8), foreground="gray").pack(anchor="w")
-                normal_t = tk.Text(nm_outer, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                ttk.Label(row_f, text="Normal Mode", font=("", 8), foreground="gray").grid(row=0, column=1, sticky="w", padx=(0, 4))
+                normal_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 normal_t.insert("1.0", normal)
-                normal_t.pack(fill="both", expand=True)
+                normal_t.grid(row=1, column=1, sticky="new", padx=(0, 4))
                 attach_spellcheck(normal_t)
-                ttk.Label(nm_outer, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-                tp_normal_t = tk.Text(nm_outer, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                enable_text_autoresize(normal_t, min_height=3, max_height=12)
+                ttk.Label(row_f, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").grid(row=2, column=1, sticky="w", padx=(0, 4), pady=(6, 0))
+                tp_normal_t = tk.Text(row_f, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 _insert_bullets(tp_normal_t, tp_normal)
-                tp_normal_t.pack(fill="both", expand=True)
+                tp_normal_t.grid(row=3, column=1, sticky="new", padx=(0, 4))
                 attach_spellcheck(tp_normal_t)
-                ttk.Button(nm_outer, text="+ New Bullet",
+                enable_text_autoresize(tp_normal_t, min_height=5, max_height=20)
+                ttk.Button(row_f, text="+ New Bullet",
                            command=lambda t=tp_normal_t: (t.insert(tk.INSERT, "\n• ") if t.get("1.0", "end-1c").strip() else t.insert("1.0", "• "))
-                           ).pack(anchor="w", pady=(2, 0))
+                           ).grid(row=4, column=1, sticky="w", padx=(0, 4), pady=(2, 0))
                 widgets["normal_mode"] = normal_t
 
                 # Col 2 — Fire Mode description + TP
-                fm_outer = ttk.Frame(row_f)
-                fm_outer.grid(row=0, column=2, sticky="nswe")
-                ttk.Label(fm_outer, text="Fire Mode", font=("", 8), foreground="gray").pack(anchor="w")
-                fire_t = tk.Text(fm_outer, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                ttk.Label(row_f, text="Fire Mode", font=("", 8), foreground="gray").grid(row=0, column=2, sticky="w")
+                fire_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 fire_t.insert("1.0", fire)
-                fire_t.pack(fill="both", expand=True)
+                fire_t.grid(row=1, column=2, sticky="new")
                 attach_spellcheck(fire_t)
-                ttk.Label(fm_outer, text="Test Procedure — Fire Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-                tp_fire_t = tk.Text(fm_outer, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+                enable_text_autoresize(fire_t, min_height=3, max_height=12)
+                ttk.Label(row_f, text="Test Procedure — Fire Mode:", font=("", 8), foreground="gray").grid(row=2, column=2, sticky="w", pady=(6, 0))
+                tp_fire_t = tk.Text(row_f, wrap="word", height=5, undo=True, maxundo=50, highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
                 _insert_bullets(tp_fire_t, tp_fire)
-                tp_fire_t.pack(fill="both", expand=True)
+                tp_fire_t.grid(row=3, column=2, sticky="new")
                 attach_spellcheck(tp_fire_t)
-                ttk.Button(fm_outer, text="+ New Bullet",
+                enable_text_autoresize(tp_fire_t, min_height=5, max_height=20)
+                ttk.Button(row_f, text="+ New Bullet",
                            command=lambda t=tp_fire_t: (t.insert(tk.INSERT, "\n• ") if t.get("1.0", "end-1c").strip() else t.insert("1.0", "• "))
-                           ).pack(anchor="w", pady=(2, 0))
+                           ).grid(row=4, column=2, sticky="w", pady=(2, 0))
                 widgets["fire_mode"] = fire_t
 
                 widgets["tp_normal"]  = tp_normal_t
                 widgets["tp_fire"]    = tp_fire_t
-                widgets["_tp_frame"]  = row_f
+                widgets["_tp_frame"]  = row_wrap
+                widgets["_row_wrap"]  = row_wrap
 
                 mon_rows.append(widgets)
                 return widgets
@@ -1088,6 +1423,12 @@ class SystemTabMixin:
 
             matrix_entries["_mon"] = mon_rows
             matrix_entries["_add_mon_row"] = _add_mon_row
+            matrix_entries["_reorder_mon"] = _reorder_mon
+
+        # ── Elevator Actions section (between matrix and Appendix B) ─────────
+        elev_actions_data = {}
+        if key == "elevator":
+            elev_actions_data = self._build_elevator_actions_section(content_wrap, _refresh_scroll)
 
         # ── Appendix B section ────────────────────────────────────────────
         appb_data = self._build_appendix_b_section(content_wrap, key, label, matrix_entries, _refresh_scroll)
@@ -1099,6 +1440,7 @@ class SystemTabMixin:
             "int_text":      int_text,
             "matrix":        matrix_entries,
             "appb":          appb_data,
+            "elev_actions":  elev_actions_data,
         }
 
         # Patch FA panel to use the real desc_text now that it exists
@@ -1154,58 +1496,150 @@ class SystemTabMixin:
         # Both SW and non-SW now use the same stacked Normal/Fire layout:
         # 0=No, 1=Integration, 2=SW(sw only), 3=Normal+Fire stacked, 4=Notes, 5=Remove
         show_sw = key in ("sprinkler", "standpipe", "pre_action")
-        COL_NO   = 0
-        COL_INTG = 1
-        COL_SW   = 2   # only used when show_sw
-        COL_NM   = 3   # stacked Normal+Fire frame (all systems)
-        COL_FM   = 3   # same column — kept as alias so rest of code is unchanged
-        COL_NT   = 4
-        COL_RM   = 5
+        COL_DH   = 0   # drag handle
+        COL_NO   = 1
+        COL_INTG = 2
+        COL_SW   = 3   # only used when show_sw
+        COL_NM   = 4   # stacked Normal+Fire frame (all systems)
+        COL_NT   = 5
+        COL_RM   = 6
 
-        rows_frame = ttk.Frame(content_wrap)
-        rows_frame.pack(fill="x")
-        rows_frame.columnconfigure(COL_NO,   weight=0, minsize=30)
-        rows_frame.columnconfigure(COL_INTG, weight=2)
+        # Header frame — separate from rows_frame so column widths match row_wrap inner grids.
+        # Column minsizes here must exactly mirror row_f's below (incl. COL_INTG/COL_NT/COL_RM)
+        # so that fixed-column totals match and weighted columns end up the same width,
+        # keeping this header aligned with the row content beneath it.
+        hdr_frame = ttk.Frame(content_wrap)
+        hdr_frame.pack(fill="x")
+        hdr_frame.columnconfigure(COL_DH,   weight=0, minsize=36)
+        hdr_frame.columnconfigure(COL_NO,   weight=0, minsize=30)
+        hdr_frame.columnconfigure(COL_INTG, weight=2, minsize=140)
         if show_sw:
-            rows_frame.columnconfigure(COL_SW, weight=0, minsize=155)
-        rows_frame.columnconfigure(COL_NM, weight=0, minsize=210)
-        rows_frame.columnconfigure(COL_NT, weight=3)
-        rows_frame.columnconfigure(COL_RM, weight=0, minsize=28)
+            hdr_frame.columnconfigure(COL_SW, weight=0, minsize=155)
+        hdr_frame.columnconfigure(COL_NM, weight=0, minsize=210)
+        hdr_frame.columnconfigure(COL_NT, weight=3, minsize=60)
+        hdr_frame.columnconfigure(COL_RM, weight=0, minsize=40)
 
-        # Header row (row 0 of rows_frame)
-        ttk.Label(rows_frame, text="No.",  font=("", 8, "bold"), foreground="gray").grid(
+        ttk.Label(hdr_frame, text="No.",  font=("", 8, "bold"), foreground="gray").grid(
             row=0, column=COL_NO, sticky="w", padx=(4, 2), pady=(0, 2))
-        ttk.Label(rows_frame, text="System Integration", font=("", 8, "bold"), foreground="gray").grid(
+        ttk.Label(hdr_frame, text="System Integration", font=("", 8, "bold"), foreground="gray").grid(
             row=0, column=COL_INTG, sticky="w", padx=(0, 6), pady=(0, 2))
         if show_sw:
-            ttk.Label(rows_frame, text="Type / No.", font=("", 8, "bold"), foreground="gray").grid(
+            ttk.Label(hdr_frame, text="Type / No.", font=("", 8, "bold"), foreground="gray").grid(
                 row=0, column=COL_SW, sticky="w", padx=(0, 6), pady=(0, 2))
-        ttk.Label(rows_frame, text="Normal / Fire Mode", font=("", 8, "bold"), foreground="gray").grid(
+        ttk.Label(hdr_frame, text="Normal / Fire Mode", font=("", 8, "bold"), foreground="gray").grid(
             row=0, column=COL_NM, sticky="w", padx=(0, 6), pady=(0, 2))
-        ttk.Label(rows_frame, text="Notes", font=("", 8, "bold"), foreground="gray").grid(
+        ttk.Label(hdr_frame, text="Notes", font=("", 8, "bold"), foreground="gray").grid(
             row=0, column=COL_NT, sticky="w", padx=(0, 4), pady=(0, 2))
 
+        rows_frame = tk.Frame(content_wrap)
+        rows_frame.pack(fill="x")
+
         appb_rows = []
-        _next_row = [1]  # mutable counter for grid row index
+
+        def _repack_all_rows():
+            """Re-pack every row_wrap in order after a reorder."""
+            for i, r in enumerate(appb_rows):
+                rw = r.get("_row_wrap")
+                if rw and rw.winfo_exists():
+                    rw.pack_forget()
+            for i, r in enumerate(appb_rows):
+                rw = r.get("_row_wrap")
+                if rw and rw.winfo_exists():
+                    rw.pack(fill="x", pady=(0, 4))
+                no_lbl = r.get("_no_lbl")
+                if no_lbl and no_lbl.winfo_exists():
+                    no_lbl.configure(text=str(i + 1))
 
         def _add_appb_row(integration="", normal="", fire="", notes="", sw_type="", sw_no=""):
             idx = len(appb_rows) + 1
-            grid_row = _next_row[0]
-            _next_row[0] += 1
 
-            widgets = {"_grid_row": grid_row}
+            widgets = {}
 
-            # No. label — will be refreshed after any add/remove
-            no_lbl = ttk.Label(rows_frame, text=str(idx), foreground="gray")
-            no_lbl.grid(row=grid_row, column=COL_NO, sticky="w", padx=(4, 2), pady=3)
+            # row_wrap — the border frame, identical to matrix row_wrap.
+            # bd=0 to start (matches the "inactive" state in _highlight_appb_row below)
+            # so row_f's width matches hdr_frame's width exactly.
+            row_wrap = tk.Frame(rows_frame, bd=0, relief="flat", highlightthickness=0)
+            row_wrap.pack(fill="x", pady=(0, 4))
+            row_f = ttk.Frame(row_wrap)
+            row_f.pack(fill="x")
+            row_f.columnconfigure(COL_DH,   weight=0, minsize=36)
+            row_f.columnconfigure(COL_NO,   weight=0, minsize=30)
+            row_f.columnconfigure(COL_INTG, weight=2, minsize=140)
+            if show_sw:
+                row_f.columnconfigure(COL_SW, weight=0, minsize=155)
+            row_f.columnconfigure(COL_NM, weight=0, minsize=210)
+            row_f.columnconfigure(COL_NT, weight=3, minsize=60)
+            row_f.columnconfigure(COL_RM, weight=0, minsize=40)
+            widgets["_row_wrap"] = row_wrap
+            widgets["_tp_frame"] = row_wrap  # for destroy compatibility with clear_all
+
+            _drag_state = {"start_y": None, "src_idx": None}
+
+            def _highlight_appb_row(w, active):
+                rw = w.get("_row_wrap")
+                if rw and rw.winfo_exists():
+                    if active:
+                        rw.configure(relief="solid", bd=2,
+                                     highlightbackground="#4a90d9",
+                                     highlightthickness=2, bg="#dce8ff")
+                    else:
+                        rw.configure(relief="flat", bd=0,
+                                     highlightthickness=0,
+                                     bg="#1e1e1e" if getattr(self, "_dark_mode", False) else "")
+                dh = w.get("_drag_handle")
+                if dh and dh.winfo_exists():
+                    dh.configure(foreground="#4a90d9" if active else "#aaaaaa")
+
+            # Drag handle
+            drag_lbl = tk.Label(row_f, text="≡", foreground="#aaaaaa",
+                                cursor="sb_v_double_arrow", font=("", 11))
+            drag_lbl.grid(row=0, column=COL_DH, sticky="w", padx=(2, 0), pady=3)
+            widgets["_drag_handle"] = drag_lbl
+
+            def _drag_start(event, w=widgets):
+                _drag_state["start_y"] = event.y_root
+                _drag_state["src_idx"] = appb_rows.index(w)
+                _highlight_appb_row(w, True)
+
+            def _drag_motion(event, w=widgets):
+                if _drag_state["src_idx"] is None:
+                    return
+                dy = event.y_root - _drag_state["start_y"]
+                if abs(dy) < 40:
+                    return
+                step = 1 if dy > 0 else -1
+                src = _drag_state["src_idx"]
+                dst = max(0, min(len(appb_rows) - 1, src + step))
+                if dst != src:
+                    appb_rows.insert(dst, appb_rows.pop(src))
+                    _drag_state["src_idx"] = dst
+                    _drag_state["start_y"] = event.y_root
+                    _repack_all_rows()
+
+            def _drag_end(event):
+                src_w = widgets
+                _drag_state["start_y"] = None
+                _drag_state["src_idx"] = None
+                _highlight_appb_row(src_w, False)
+
+            drag_lbl.bind("<ButtonPress-1>",   _drag_start)
+            drag_lbl.bind("<B1-Motion>",        _drag_motion)
+            drag_lbl.bind("<ButtonRelease-1>",  _drag_end)
+
+            # No. label
+            no_lbl = ttk.Label(row_f, text=str(idx), foreground="gray")
+            no_lbl.grid(row=0, column=COL_NO, sticky="w", padx=(4, 2), pady=3)
             widgets["_no_lbl"] = no_lbl
 
             # Integration name — 2-line Text widget
-            integ_t = tk.Text(rows_frame, wrap="word", height=2, relief="flat",
+            # width=1 so the widget's natural size doesn't drive COL_INTG's width
+            # (it expands to fill the column via sticky="nswe"); keeps this column's
+            # width consistent with hdr_frame's, which only has minsize/weight to go on.
+            integ_t = tk.Text(row_f, wrap="word", height=2, width=1, relief="flat",
                               bd=1, highlightthickness=1,
                               highlightbackground="#aaaaaa", highlightcolor="#0078d4")
             integ_t.insert("1.0", integration)
-            integ_t.grid(row=grid_row, column=COL_INTG, sticky="nswe", padx=(0, 6), pady=3)
+            integ_t.grid(row=0, column=COL_INTG, sticky="nswe", padx=(0, 6), pady=3)
             attach_spellcheck(integ_t)
             widgets["integration"] = integ_t
 
@@ -1213,8 +1647,8 @@ class SystemTabMixin:
             sw_type_var = tk.StringVar(value=sw_type if sw_type else "SV")
             sw_no_var   = tk.StringVar(value=sw_no)
             if show_sw:
-                sw_f = ttk.Frame(rows_frame)
-                sw_f.grid(row=grid_row, column=COL_SW, sticky="nw", padx=(0, 6), pady=3)
+                sw_f = ttk.Frame(row_f)
+                sw_f.grid(row=0, column=COL_SW, sticky="nw", padx=(0, 6), pady=3)
                 widgets["_sw_f"] = sw_f
                 ttk.Label(sw_f, text="Type:", foreground="gray", font=("", 8)).grid(row=0, column=0, sticky="w")
                 SW_OPTIONS = ["SV", "FS", "LP"]
@@ -1252,75 +1686,52 @@ class SystemTabMixin:
             nm_var = tk.StringVar(value=normal)
             fm_var = tk.StringVar(value=fire)
 
-            if show_sw:
-                # Stack Normal and Fire vertically in a single combined frame
-                nf_outer = ttk.Frame(rows_frame)
-                nf_outer.grid(row=grid_row, column=COL_NM, columnspan=1, sticky="nw", padx=(0, 6), pady=3)
-                widgets["_nf_outer"] = nf_outer
-                nm_f = ttk.Frame(nf_outer)
-                nm_f.pack(fill="x", pady=(0, 4))
-                ttk.Label(nm_f, text="Normal:", foreground="gray", font=("", 8), width=7).pack(side="left")
-                nm_btns, nm_repaint = _make_toggle_group(nm_f, nm_var,
-                    [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
-                fm_f = ttk.Frame(nf_outer)
-                fm_f.pack(fill="x")
-                ttk.Label(fm_f, text="Fire:", foreground="gray", font=("", 8), width=7).pack(side="left")
-                fm_btns, fm_repaint = _make_toggle_group(fm_f, fm_var,
-                    [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
-            else:
-                # Stacked Normal / Fire (same layout as SW systems)
-                nf_outer = ttk.Frame(rows_frame)
-                nf_outer.grid(row=grid_row, column=COL_NM, columnspan=1, sticky="nw", padx=(0, 6), pady=3)
-                widgets["_nf_outer"] = nf_outer
-                nm_f = ttk.Frame(nf_outer)
-                nm_f.pack(fill="x", pady=(0, 4))
-                ttk.Label(nm_f, text="Normal:", foreground="gray", font=("", 8), width=7).pack(side="left")
-                nm_btns, nm_repaint = _make_toggle_group(nm_f, nm_var,
-                    [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
-                fm_f = ttk.Frame(nf_outer)
-                fm_f.pack(fill="x")
-                ttk.Label(fm_f, text="Fire:", foreground="gray", font=("", 8), width=7).pack(side="left")
-                fm_btns, fm_repaint = _make_toggle_group(fm_f, fm_var,
-                    [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
+            # Stacked Normal / Fire frame (same layout for both SW and non-SW)
+            nf_outer = ttk.Frame(row_f)
+            nf_outer.grid(row=0, column=COL_NM, columnspan=1, sticky="nw", padx=(0, 6), pady=3)
+            widgets["_nf_outer"] = nf_outer
+            nm_f = ttk.Frame(nf_outer)
+            nm_f.pack(fill="x", pady=(0, 4))
+            ttk.Label(nm_f, text="Normal:", foreground="gray", font=("", 8), width=7).pack(side="left")
+            nm_btns, nm_repaint = _make_toggle_group(nm_f, nm_var,
+                [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
+            fm_f = ttk.Frame(nf_outer)
+            fm_f.pack(fill="x")
+            ttk.Label(fm_f, text="Fire:", foreground="gray", font=("", 8), width=7).pack(side="left")
+            fm_btns, fm_repaint = _make_toggle_group(fm_f, fm_var,
+                [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
 
             widgets["normal"] = nm_var
             widgets["_nm_repaint"] = nm_repaint
             widgets["fire"] = fm_var
             widgets["_fm_repaint"] = fm_repaint
 
-            # Notes entry
-            notes_e = ttk.Entry(rows_frame)
+            # Notes entry — width=1 so it doesn't drive COL_NT's natural width (see integ_t above)
+            notes_e = ttk.Entry(row_f, width=1)
             notes_e.insert(0, notes)
-            notes_e.grid(row=grid_row, column=COL_NT, sticky="we", padx=(0, 4), pady=3, ipady=2)
+            notes_e.grid(row=0, column=COL_NT, sticky="we", padx=(0, 4), pady=3, ipady=2)
             widgets["notes"] = notes_e
 
             # Remove button
             def _remove(r=widgets):
+                rw = r.get("_row_wrap")
+                if rw and rw.winfo_exists():
+                    rw.destroy()
                 if r in appb_rows:
                     appb_rows.remove(r)
-                for wval in r.values():
-                    if hasattr(wval, "destroy"):
-                        try: wval.destroy()
-                        except Exception: pass
-                _renumber()
+                _repack_all_rows()
                 if _refresh_scroll:
                     self.root.after(0, _refresh_scroll)
 
-            rm_btn = ttk.Button(rows_frame, text="✕", width=2, command=_remove)
-            rm_btn.grid(row=grid_row, column=COL_RM, padx=(0, 4), pady=3)
+            rm_btn = ttk.Button(row_f, text="✕", width=2, command=_remove)
+            rm_btn.grid(row=0, column=COL_RM, padx=(0, 4), pady=3)
             widgets["_rm_btn"] = rm_btn
 
             appb_rows.append(widgets)
-            _renumber()
+            _repack_all_rows()
             if _refresh_scroll:
                 self.root.after(0, _refresh_scroll)
             return widgets
-
-        def _renumber():
-            for i, r in enumerate(appb_rows):
-                lbl = r.get("_no_lbl")
-                if lbl and lbl.winfo_exists():
-                    lbl.configure(text=str(i + 1))
 
         # Seed normal/fire desc entries with defaults
         nd_default, fd_default = APPB_DESC_DEFAULTS.get(key, ("", ""))
@@ -1335,7 +1746,8 @@ class SystemTabMixin:
             self.root.after(50, self._refresh_elevator_appb_rows)
         else:
             for name in APPB_DEFAULTS.get(key, []):
-                _add_appb_row(integration=name, normal="", fire="")
+                sw_type = APPB_SW_TYPE_DEFAULTS.get(name, "") if show_sw else ""
+                _add_appb_row(integration=name, normal="", fire="", sw_type=sw_type)
 
         btn_f = ttk.Frame(content_wrap)
         btn_f.pack(fill="x", pady=(4, 0))
@@ -1379,10 +1791,12 @@ class SystemTabMixin:
         ttk.Label(facp_frame, text="Room:").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=3)
         self.facp_room_entry = ttk.Entry(facp_frame, width=36)
         self.facp_room_entry.grid(row=0, column=1, sticky="we", padx=(0, 8), pady=3)
+        self._attach_entry_placeholder(self.facp_room_entry, "e.g. Main Electrical Room")
 
         ttk.Label(facp_frame, text="Floor:").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
         self.facp_floor_entry = ttk.Entry(facp_frame, width=22)
         self.facp_floor_entry.grid(row=0, column=3, sticky="we", pady=3)
+        self._attach_entry_placeholder(self.facp_floor_entry, "e.g. ground floor")
 
         facp_frame.columnconfigure(1, weight=1)
         facp_frame.columnconfigure(3, weight=1)
@@ -1393,19 +1807,62 @@ class SystemTabMixin:
         ttk.Label(parent, text="Fire Alarm Annunciator Panel",
                   font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
-        faap_frame = ttk.Frame(parent)
-        faap_frame.pack(fill="x", pady=(0, 6))
+        faap_rows_frame = ttk.Frame(parent)
+        faap_rows_frame.pack(fill="x")
 
-        ttk.Label(faap_frame, text="Room:").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=3)
-        self.faap_room_entry = ttk.Entry(faap_frame, width=36)
-        self.faap_room_entry.grid(row=0, column=1, sticky="we", padx=(0, 8), pady=3)
+        self.faap_rows = []
 
-        ttk.Label(faap_frame, text="Floor:").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
-        self.faap_floor_entry = ttk.Entry(faap_frame, width=22)
-        self.faap_floor_entry.grid(row=0, column=3, sticky="we", pady=3)
+        def _add_faap_row(room_val="", floor_val=""):
+            row = {}
+            row_f = ttk.Frame(faap_rows_frame)
+            row_f.pack(fill="x", pady=(0, 3))
+            row["frame"] = row_f
 
-        faap_frame.columnconfigure(1, weight=1)
-        faap_frame.columnconfigure(3, weight=1)
+            ttk.Label(row_f, text="Room:").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=3)
+            room_e = ttk.Entry(row_f, width=36)
+            room_e.grid(row=0, column=1, sticky="we", padx=(0, 8), pady=3)
+            self._attach_entry_placeholder(room_e, "e.g. Main Lobby")
+            if room_val:
+                room_e.insert(0, room_val)
+            row["room_entry"] = room_e
+
+            ttk.Label(row_f, text="Floor:").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
+            floor_e = ttk.Entry(row_f, width=22)
+            floor_e.grid(row=0, column=3, sticky="we", pady=3)
+            self._attach_entry_placeholder(floor_e, "e.g. ground floor")
+            if floor_val:
+                floor_e.insert(0, floor_val)
+            row["floor_entry"] = floor_e
+
+            row_f.columnconfigure(1, weight=1)
+            row_f.columnconfigure(3, weight=1)
+
+            def _remove(r=row):
+                r["frame"].destroy()
+                if r in self.faap_rows:
+                    self.faap_rows.remove(r)
+                getattr(self, "_fa_update_desc", lambda: None)()
+
+            ttk.Button(row_f, text="✕", width=3, command=_remove).grid(row=0, column=4, padx=(4, 0), pady=3)
+
+            for w in (room_e, floor_e):
+                w.bind("<KeyRelease>", lambda e: getattr(self, "_fa_update_desc", lambda: None)())
+
+            self.faap_rows.append(row)
+            getattr(self, "_fa_update_desc", lambda: None)()
+            return row
+
+        self._add_faap_row = _add_faap_row
+
+        def _clear_faap_rows():
+            for r in list(self.faap_rows):
+                r["frame"].destroy()
+            self.faap_rows.clear()
+
+        self._clear_faap_rows = _clear_faap_rows
+
+        ttk.Button(parent, text="+ Add Annunciator Panel",
+                   command=lambda: _add_faap_row()).pack(anchor="w", pady=(0, 6))
 
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(2, 8))
 
@@ -1473,10 +1930,24 @@ class SystemTabMixin:
             preview = preview.replace("{{fa_initiating_devices}}", fa_sentence)
             preview = preview.replace("{{facp_room}}",  self.facp_room_entry.get()  or "{{facp_room}}")
             preview = preview.replace("{{facp_floor}}", self.facp_floor_entry.get() or "{{facp_floor}}")
-            preview = preview.replace("{{faap_room}}",  self.faap_room_entry.get()  or "{{faap_room}}")
-            preview = preview.replace("{{faap_floor}}", self.faap_floor_entry.get() or "{{faap_floor}}")
+            preview = preview.replace("{{faap_sentence}}", _build_faap_sentence())
+            preview = preview.replace("{{fa_notification_devices}}", _build_notification_sentence())
             dt.delete("1.0", "end")
             dt.insert("1.0", preview)
+
+        def _build_faap_sentence():
+            panels = []
+            for r in self.faap_rows:
+                room = r["room_entry"].get().strip() or "{{faap_room}}"
+                floor = r["floor_entry"].get().strip() or "{{faap_floor}}"
+                panels.append((room, floor))
+            if not panels:
+                return ""
+            if len(panels) == 1:
+                room, floor = panels[0]
+                return f" The fire alarm annunciator panel is located in the {room} on the {floor} of the building."
+            lines = [f"• {room} on the {floor} of the building." for room, floor in panels]
+            return " Fire alarm annunciator panels are located as follows:\n" + "\n".join(lines)
 
         def _build_fa_sentence():
             if not self.fa_devices:
@@ -1665,15 +2136,15 @@ class SystemTabMixin:
             preview = preview.replace("{{fa_supervisory_devices}}", sup_sentence or "{{fa_supervisory_devices}}")
             preview = preview.replace("{{facp_room}}",  self.facp_room_entry.get()  or "{{facp_room}}")
             preview = preview.replace("{{facp_floor}}", self.facp_floor_entry.get() or "{{facp_floor}}")
-            preview = preview.replace("{{faap_room}}",  self.faap_room_entry.get()  or "{{faap_room}}")
-            preview = preview.replace("{{faap_floor}}", self.faap_floor_entry.get() or "{{faap_floor}}")
+            preview = preview.replace("{{faap_sentence}}", _build_faap_sentence())
+            preview = preview.replace("{{fa_notification_devices}}", _build_notification_sentence())
             dt.delete("1.0", "end")
             dt.insert("1.0", preview)
 
         self._fa_update_desc = _update_desc_preview_full
-        # Re-bind FACP entries and refresh_fa_tree to use the full version
-        for entry in (self.facp_room_entry, self.facp_floor_entry,
-                      self.faap_room_entry, self.faap_floor_entry):
+        # Re-bind FACP entries to use the full version (FAAP rows already bind
+        # to self._fa_update_desc dynamically, which now resolves here)
+        for entry in (self.facp_room_entry, self.facp_floor_entry):
             entry.bind("<KeyRelease>", lambda e: _update_desc_preview_full())
 
         # Also make the initiating devices refresh use the full preview
@@ -1735,6 +2206,90 @@ class SystemTabMixin:
         ttk.Button(sup_btn_frame, text="+ Add",  command=add_sup_device).pack(side="left", padx=(0, 4))
         ttk.Button(sup_btn_frame, text="Remove", command=remove_sup_device).pack(side="left")
 
+        # ── Notification Devices Section ──────────────────────────
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(6, 8))
+        ttk.Label(parent, text="Notification Devices",
+                  font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
+
+        notif_cols = ("device",)
+        self.fa_notif_tree = ttk.Treeview(parent, columns=notif_cols, show="headings", height=3)
+        self.fa_notif_tree.heading("device", text="Notification Device")
+        self.fa_notif_tree.column("device", width=200)
+        notif_scroll = ttk.Scrollbar(parent, orient="vertical", command=self.fa_notif_tree.yview)
+        self.fa_notif_tree.configure(yscrollcommand=notif_scroll.set)
+        self.fa_notif_tree.pack(side="top", fill="x", pady=(0, 4))
+
+        notif_entry_frame = ttk.Frame(parent)
+        notif_entry_frame.pack(fill="x", pady=(0, 4))
+
+        ttk.Label(notif_entry_frame, text="Device:").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=2)
+        self.fa_notif_device_entry = ttk.Entry(notif_entry_frame, width=40)
+        self.fa_notif_device_entry.grid(row=0, column=1, sticky="we", pady=2, ipady=4)
+        notif_entry_frame.columnconfigure(1, weight=1)
+
+        self.fa_notification_devices = []
+
+        def refresh_notif_tree(skip_preview=False):
+            self.fa_notif_tree.delete(*self.fa_notif_tree.get_children())
+            for i, d in enumerate(self.fa_notification_devices):
+                self.fa_notif_tree.insert("", "end", iid=str(i), values=(d["device"],))
+            if not skip_preview:
+                getattr(self, "_fa_update_desc", lambda: None)()
+
+        def _build_notification_sentence():
+            if not self.fa_notification_devices:
+                return "horns and strobes"
+            parts = [d["device"].lower() for d in self.fa_notification_devices]
+            if len(parts) == 1:
+                return parts[0]
+            elif len(parts) == 2:
+                return f"{parts[0]} and {parts[1]}"
+            else:
+                return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+        def add_notif_device():
+            device = self.fa_notif_device_entry.get().strip()
+            if not device:
+                return
+            self.fa_notification_devices.append({"device": device})
+            self.fa_notif_device_entry.delete(0, "end")
+            refresh_notif_tree()
+
+        def remove_notif_device():
+            sel = self.fa_notif_tree.selection()
+            if sel:
+                del self.fa_notification_devices[int(sel[0])]
+                refresh_notif_tree()
+
+        def edit_notif_device(event=None):
+            sel = self.fa_notif_tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            d = self.fa_notification_devices[idx]
+            self.fa_notif_device_entry.delete(0, "end")
+            self.fa_notif_device_entry.insert(0, d["device"])
+            del self.fa_notification_devices[idx]
+            refresh_notif_tree()
+
+        self.fa_notif_tree.bind("<Double-1>", edit_notif_device)
+        self._fa_notif_refresh = refresh_notif_tree
+
+        # Default entries — shown in treeview and reflected in description preview
+        self.fa_notification_devices.append({"device": "Horns"})
+        self.fa_notification_devices.append({"device": "Strobes"})
+        refresh_notif_tree(skip_preview=True)
+
+        notif_btn_frame = ttk.Frame(parent)
+        notif_btn_frame.pack(fill="x", pady=(0, 4))
+        ttk.Button(notif_btn_frame, text="+ Add",  command=add_notif_device).pack(side="left", padx=(0, 4))
+        ttk.Button(notif_btn_frame, text="Remove", command=remove_notif_device).pack(side="left")
+
+        # ── Drag-to-reorder for device lists ───────────────────────
+        self._enable_tree_drag_reorder(self.fa_dev_tree, self.fa_devices, lambda: self._fa_refresh())
+        self._enable_tree_drag_reorder(self.fa_sup_tree, self.fa_supervisory_devices, lambda: self._fa_sup_refresh())
+        self._enable_tree_drag_reorder(self.fa_notif_tree, self.fa_notification_devices, refresh_notif_tree)
+
 
     def _refresh_spr_btn_styles(self):
         """Re-apply sprinkler toggle colours by calling each stored repaint fn."""
@@ -1749,6 +2304,241 @@ class SystemTabMixin:
         pass
 
         # ---------- Action bar ----------
+    def _build_elevator_actions_section(self, parent, _refresh_scroll=None):
+        """Build the Elevator Actions table UI (Action | Description) with
+        add/remove/drag-to-reorder rows. Inserted between the matrix and Appendix B.
+
+        Default rows match the Word template defaults. The Primary and Alternate
+        Recall descriptions auto-update when elev_primary_floor / elev_alternate_floor
+        change — but only if the user has not manually edited that description cell.
+        """
+        # ── Section header ────────────────────────────────────────────────
+        sep = ttk.Separator(parent, orient="horizontal")
+        sep.pack(fill="x", pady=(10, 4))
+        hdr = ttk.Frame(parent)
+        hdr.pack(fill="x")
+        ttk.Label(hdr, text="Elevator Actions",
+                  font=("", 10, "bold")).pack(side="left")
+        ttk.Label(hdr, text="  Actions performed by the elevator on fire alarm activation",
+                  foreground="gray").pack(side="left")
+
+        # Column constants
+        COL_DH   = 0
+        COL_NO   = 1
+        COL_ACT  = 2
+        COL_DESC = 3
+        COL_RM   = 4
+
+        # Shared grid frame — header row 0, data rows 1+
+        grid_frame = tk.Frame(parent)
+        grid_frame.pack(fill="x", pady=(4, 0))
+        grid_frame.columnconfigure(COL_DH,   weight=0, minsize=22)
+        grid_frame.columnconfigure(COL_NO,   weight=0, minsize=30)
+        grid_frame.columnconfigure(COL_ACT,  weight=1)
+        grid_frame.columnconfigure(COL_DESC, weight=3)
+        grid_frame.columnconfigure(COL_RM,   weight=0, minsize=28)
+
+        ttk.Label(grid_frame, text="No.",    font=("", 8, "bold"), foreground="gray").grid(
+            row=0, column=COL_NO,   sticky="w", padx=(4, 2), pady=(0, 2))
+        ttk.Label(grid_frame, text="Action", font=("", 8, "bold"), foreground="gray").grid(
+            row=0, column=COL_ACT,  sticky="w", padx=(0, 6), pady=(0, 2))
+        ttk.Label(grid_frame, text="Operation Description", font=("", 8, "bold"), foreground="gray").grid(
+            row=0, column=COL_DESC, sticky="w", padx=(0, 4), pady=(0, 2))
+
+        _next_grow = [1]
+        action_rows = []
+        _drag_state = {"start_y": None, "src_idx": None}
+
+        def _repack_all():
+            for i, r in enumerate(action_rows):
+                grow = i + 1
+                for col_key, col_idx, kw in (
+                    ("_drag_handle", COL_DH,   dict(sticky="w",   padx=(2, 0), pady=3)),
+                    ("_no_lbl",      COL_NO,   dict(sticky="w",   padx=(4, 2), pady=3)),
+                    ("action",       COL_ACT,  dict(sticky="nswe",padx=(0, 6), pady=3)),
+                    ("desc",         COL_DESC, dict(sticky="nswe",padx=(0, 4), pady=3)),
+                    ("_rm_btn",      COL_RM,   dict(padx=(0, 4),  pady=3)),
+                ):
+                    w = r.get(col_key)
+                    if w and w.winfo_exists():
+                        w.grid(row=grow, column=col_idx, **kw)
+                no_lbl = r.get("_no_lbl")
+                if no_lbl and no_lbl.winfo_exists():
+                    no_lbl.configure(text=str(i + 1))
+
+        def _add_action_row(action="", desc="", _auto_desc_key=None):
+            """
+            _auto_desc_key: one of "primary_recall" | "alternate_recall" | None.
+            When set, the desc field is auto-updated from the recall floor entries
+            unless the user has manually edited it.
+            """
+            idx  = len(action_rows) + 1
+            grow = _next_grow[0]
+            _next_grow[0] += 1
+            widgets = {}
+
+            # Track whether user has manually edited the description
+            _user_edited = [False]
+
+            # Drag handle
+            drag_lbl = tk.Label(grid_frame, text="≡", foreground="#aaaaaa",
+                                cursor="sb_v_double_arrow", font=("", 11))
+            drag_lbl.grid(row=grow, column=COL_DH, sticky="w", padx=(2, 0), pady=3)
+            widgets["_drag_handle"] = drag_lbl
+
+            def _drag_start(event, w=widgets):
+                _drag_state["start_y"] = event.y_root
+                _drag_state["src_idx"] = action_rows.index(w)
+
+            def _drag_motion(event, w=widgets):
+                if _drag_state["src_idx"] is None:
+                    return
+                dy = event.y_root - _drag_state["start_y"]
+                if abs(dy) < 32:
+                    return
+                step = 1 if dy > 0 else -1
+                src = _drag_state["src_idx"]
+                dst = max(0, min(len(action_rows) - 1, src + step))
+                if dst != src:
+                    action_rows.insert(dst, action_rows.pop(src))
+                    _drag_state["src_idx"] = dst
+                    _drag_state["start_y"] = event.y_root
+                    _repack_all()
+
+            def _drag_end(event):
+                _drag_state["start_y"] = None
+                _drag_state["src_idx"] = None
+
+            drag_lbl.bind("<ButtonPress-1>",   _drag_start)
+            drag_lbl.bind("<B1-Motion>",        _drag_motion)
+            drag_lbl.bind("<ButtonRelease-1>",  _drag_end)
+
+            # Row number label
+            no_lbl = ttk.Label(grid_frame, text=str(idx), foreground="gray")
+            no_lbl.grid(row=grow, column=COL_NO, sticky="w", padx=(4, 2), pady=3)
+            widgets["_no_lbl"] = no_lbl
+
+            # Action text widget
+            act_t = tk.Text(grid_frame, wrap="word", height=1, relief="flat",
+                            bd=1, highlightthickness=1,
+                            highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+            act_t.insert("1.0", action)
+            act_t.grid(row=grow, column=COL_ACT, sticky="nswe", padx=(0, 6), pady=3)
+            attach_spellcheck(act_t)
+            widgets["action"] = act_t
+
+            # Description text widget
+            desc_t = tk.Text(grid_frame, wrap="word", height=2, relief="flat",
+                             bd=1, highlightthickness=1,
+                             highlightbackground="#aaaaaa", highlightcolor="#0078d4")
+            desc_t.insert("1.0", desc)
+            desc_t.grid(row=grow, column=COL_DESC, sticky="nswe", padx=(0, 4), pady=3)
+            attach_spellcheck(desc_t)
+            widgets["desc"]             = desc_t
+            widgets["_auto_desc_key"]   = _auto_desc_key
+            widgets["_user_edited"]     = _user_edited
+
+            def _on_desc_edit(event, _ue=_user_edited):
+                _ue[0] = True
+            desc_t.bind("<Key>", _on_desc_edit)
+
+            # Remove button
+            def _remove(r=widgets):
+                for col_key in ("_drag_handle", "_no_lbl", "action", "desc", "_rm_btn"):
+                    w = r.get(col_key)
+                    if w and w.winfo_exists():
+                        w.grid_remove()
+                        w.destroy()
+                if r in action_rows:
+                    action_rows.remove(r)
+                _repack_all()
+                if _refresh_scroll:
+                    self.root.after(0, _refresh_scroll)
+
+            rm_btn = ttk.Button(grid_frame, text="✕", width=2, command=_remove)
+            rm_btn.grid(row=grow, column=COL_RM, padx=(0, 4), pady=3)
+            widgets["_rm_btn"] = rm_btn
+
+            action_rows.append(widgets)
+            if _refresh_scroll:
+                self.root.after(0, _refresh_scroll)
+            return widgets
+
+        # ── Seed default rows ─────────────────────────────────────────────
+        prim = getattr(self, "elev_primary_floor",  None)
+        alt  = getattr(self, "elev_alternate_floor", None)
+        prim_val = prim.get().strip() if prim else ""
+        alt_val  = alt.get().strip()  if alt  else ""
+
+        def _prim_desc(floor):
+            f = floor or "{{elev_prim_rcl}}"
+            return (
+                f"Initiated for automatic fire detection activation on floor areas "
+                f"other than Primary Recall Level ({f})."
+            )
+
+        def _alt_desc(floor):
+            f = floor or "{{elev_prim_rcl}}"
+            return (
+                f"Initiated for automatic fire detection activation on the Primary "
+                f"Recall Level ({f})."
+            )
+
+        DEFAULTS = [
+            ("Primary Recall",        _prim_desc(prim_val), "primary_recall"),
+            ("Alternate Recall",      _alt_desc(alt_val),   "alternate_recall"),
+            ("Top of Shaft Alarm",
+             "Initiated for automatic fire detection activation at the top of the elevator shaft.",
+             None),
+            ("Elevator Pit Alarm",
+             "Initiated for automatic fire detection activation in the elevator shaft pit.",
+             None),
+        ]
+        for act, desc, adk in DEFAULTS:
+            _add_action_row(action=act, desc=desc, _auto_desc_key=adk)
+
+        # ── Auto-update recall descriptions when floor fields change ──────
+        def _sync_recall_descs(*_):
+            pv = (getattr(self, "elev_primary_floor", None) or tk.StringVar()).get().strip()
+            for r in action_rows:
+                adk = r.get("_auto_desc_key")
+                ue  = r.get("_user_edited", [True])
+                if ue[0]:
+                    continue
+                dt = r.get("desc")
+                if not (dt and dt.winfo_exists()):
+                    continue
+                if adk == "primary_recall":
+                    new_text = _prim_desc(pv)
+                elif adk == "alternate_recall":
+                    new_text = _alt_desc(pv)   # primary floor used in both per template
+                else:
+                    continue
+                dt.delete("1.0", "end")
+                dt.insert("1.0", new_text)
+
+        # Bind to the elevator floor entry widgets once they exist
+        def _attach_recall_bindings():
+            pf = getattr(self, "elev_primary_floor",  None)
+            af = getattr(self, "elev_alternate_floor", None)
+            if pf:
+                pf.bind("<KeyRelease>", _sync_recall_descs, add="+")
+            if af:
+                af.bind("<KeyRelease>", _sync_recall_descs, add="+")
+
+        self.root.after(100, _attach_recall_bindings)
+
+        # ── Add Row button ────────────────────────────────────────────────
+        btn_f = ttk.Frame(parent)
+        btn_f.pack(fill="x", pady=(4, 0))
+        ttk.Button(btn_f, text="+ Add Action Row",
+                   command=_add_action_row).pack(side="left")
+
+        return {
+            "_rows":    action_rows,
+            "_add_row": _add_action_row,
+        }
+
     def _refresh_elevator_appb_rows(self):
         """Rebuild elevator Appendix B rows based on current elevator count."""
         ui = self.sys_ui.get("elevator", {})
@@ -1769,5 +2559,5 @@ class SystemTabMixin:
         except (ValueError, TypeError):
             count = 1
         for n in range(1, count + 1):
-            for recall in ["Primary Recall", "Alternate Recall", "Firefighter Warning Recall"]:
+            for recall in ["Primary Recall", "Alternate Recall", "Top of Shaft", "Elevator Pit"]:
                 add_row(integration=f"Elevator #{n} {recall}", normal="", fire="")

@@ -12,15 +12,13 @@ identical in mechanism to sprinkler, standpipe, etc.
 
 from copy import deepcopy
 from lxml import etree
-from docx.oxml.ns import qn
 
-from defaults import APPB_DESC_DEFAULTS, MATRIX_DEFAULTS
+from defaults import APPB_DESC_DEFAULTS
 from constants import SYSTEMS
 
 
 def populate_appendix_b_table(doc, data):
     WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
     W = f"{{{WNS}}}"
 
     systems_data = data.get("systems", {})

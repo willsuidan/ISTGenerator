@@ -10,7 +10,6 @@ from tkcalendar import Calendar
 from copy import deepcopy
 from datetime import datetime
 
-from docx.shared import Inches
 from lxml import etree
 
 
@@ -230,10 +229,222 @@ def replace_placeholder_paragraph_with_paragraphs(doc, placeholder_key, paragrap
             ind = pPr.find(f"{{{WNS}}}ind")
             if ind is None:
                 ind = etree.SubElement(pPr, f"{{{WNS}}}ind")
-            ind.set(f"{{{WNS}}}left", "720")
+            ind.set(f"{{{WNS}}}left", "360")
         parent.insert(insert_idx + offset, new_el)
         offset += 1
     parent.remove(placeholder_el)
+
+
+def style_arencon_runs(doc):
+    """Find every occurrence of 'Arencon Inc.' (case-insensitive) in body paragraphs
+    and table cells (headers/footers excluded) and reformat the text so that:
+      • 'ARENCON' is all-caps, BlairMdITC TT, 9 pt
+      • 'INC.'    is all-caps, BlairMdITC TT, 7 pt
+
+    Occurrences may be split across multiple <w:r> runs by Word's XML. The function
+    joins the text of all runs in a paragraph, locates the pattern, then rewrites the
+    involved runs in-place: the run that starts the match gets the prefix text, then
+    two new runs (ARENCON / INC.) are inserted after it (inheriting the original rPr
+    so colour/bold/etc. are preserved), and any suffix text goes into a further run.
+    Intermediate runs between the first and last involved run are cleared.
+    """
+    import re
+    from copy import deepcopy
+    from lxml import etree
+
+    WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W   = f"{{{WNS}}}"
+    XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+    PATTERN = re.compile(r"arencon\s+inc\.", re.IGNORECASE)
+
+    FONT_ARENCON = "BlairMdITC TT"
+    SIZE_ARENCON = "18"   # half-points: 9 pt = 18 half-points
+    FONT_INC     = "BlairMdITC TT"
+    SIZE_INC     = "14"   # half-points: 7 pt = 14 half-points
+
+    def _make_styled_run(parent_r, text, font_name, half_pt_size):
+        """Clone the rPr of parent_r, override font + size, return a new <w:r>."""
+        new_r = etree.Element(f"{W}r")
+
+        # Clone existing rPr (preserves bold, colour, etc.) or create a fresh one
+        orig_rPr = parent_r.find(f"{W}rPr")
+        if orig_rPr is not None:
+            rPr = deepcopy(orig_rPr)
+        else:
+            rPr = etree.Element(f"{W}rPr")
+        new_r.append(rPr)
+
+        # ── Font ────────────────────────────────────────────────────────
+        rFonts = rPr.find(f"{W}rFonts")
+        if rFonts is None:
+            rFonts = etree.SubElement(rPr, f"{W}rFonts")
+        for attr in (f"{W}ascii", f"{W}hAnsi", f"{W}cs"):
+            rFonts.set(attr, font_name)
+
+        # ── Size ────────────────────────────────────────────────────────
+        sz = rPr.find(f"{W}sz")
+        if sz is None:
+            sz = etree.SubElement(rPr, f"{W}sz")
+        sz.set(f"{W}val", half_pt_size)
+
+        szCs = rPr.find(f"{W}szCs")
+        if szCs is None:
+            szCs = etree.SubElement(rPr, f"{W}szCs")
+        szCs.set(f"{W}val", half_pt_size)
+
+        # ── Text ────────────────────────────────────────────────────────
+        t = etree.SubElement(new_r, f"{W}t")
+        t.text = text
+        if text and (text[0] == " " or text[-1] == " "):
+            t.set(XML_SPACE, "preserve")
+
+        return new_r
+
+    def _make_plain_run(parent_r, text):
+        """Clone the rPr of parent_r verbatim for prefix/suffix text."""
+        new_r = etree.Element(f"{W}r")
+        orig_rPr = parent_r.find(f"{W}rPr")
+        if orig_rPr is not None:
+            new_r.append(deepcopy(orig_rPr))
+        t = etree.SubElement(new_r, f"{W}t")
+        t.text = text
+        if text and (text[0] == " " or text[-1] == " "):
+            t.set(XML_SPACE, "preserve")
+        return new_r
+
+    def _process_paragraph(para):
+        p = para._p
+
+        # Collect (run_element, t_element) pairs — skip field-code runs
+        pairs = []
+        field_depth = 0
+        for r in p.findall(f"{W}r"):
+            fld = r.find(f"{W}fldChar")
+            if fld is not None:
+                ftype = fld.get(f"{W}fldCharType")
+                if ftype == "begin":
+                    field_depth += 1
+                elif ftype == "end":
+                    field_depth -= 1
+                continue
+            if field_depth > 0:
+                continue
+            t = r.find(f"{W}t")
+            if t is not None:
+                pairs.append((r, t))
+
+        if not pairs:
+            return
+
+        full_text = "".join(t.text or "" for _, t in pairs)
+        if not PATTERN.search(full_text):
+            return
+
+        # Process all matches in one pass (right-to-left so indices stay valid)
+        matches = list(PATTERN.finditer(full_text))
+        for m in reversed(matches):
+            match_str = m.group(0)           # original casing, e.g. "Arencon Inc."
+            idx       = m.start()
+            end_idx   = m.end()
+
+            # Determine "ARENCON" and " INC." portions from the actual match
+            # (handles any whitespace between them, e.g. "Arencon  Inc.")
+            space_match = re.search(r"\s+", match_str)
+            if space_match:
+                space_str  = space_match.group(0)
+                arencon_txt = "ARENCON"
+                inc_txt     = space_str + "INC."
+            else:
+                arencon_txt = "ARENCON"
+                inc_txt     = " INC."
+
+            # Build position → pair index map
+            pos_map = []
+            for i, (_, t) in enumerate(pairs):
+                pos_map.extend([i] * len(t.text or ""))
+
+            involved = []
+            for pos in range(idx, end_idx):
+                if pos < len(pos_map):
+                    pi = pos_map[pos]
+                    if not involved or involved[-1] != pi:
+                        involved.append(pi)
+            if not involved:
+                continue
+
+            first_pi = involved[0]
+            last_pi  = involved[-1]
+
+            first_r, first_t = pairs[first_pi]
+            last_r,  last_t  = pairs[last_pi]
+
+            chars_before_first = sum(len(pairs[i][1].text or "") for i in range(first_pi))
+            prefix = (first_t.text or "")[:idx - chars_before_first]
+
+            chars_before_last = sum(len(pairs[i][1].text or "") for i in range(last_pi))
+            suffix_start = end_idx - chars_before_last
+            suffix = (last_t.text or "")[suffix_start:]
+
+            # Clear intermediate runs
+            for pi in involved[1:]:
+                pairs[pi][1].text = ""
+
+            # Rewrite first run to hold only the prefix (may be empty)
+            first_t.text = prefix
+            if prefix and (prefix[0] == " " or prefix[-1] == " "):
+                first_t.set(XML_SPACE, "preserve")
+
+            # Insert new runs after first_r in the paragraph XML
+            insert_after = first_r
+            new_runs = []
+
+            r_arencon = _make_styled_run(first_r, arencon_txt, FONT_ARENCON, SIZE_ARENCON)
+            r_inc     = _make_styled_run(first_r, inc_txt,     FONT_INC,     SIZE_INC)
+            new_runs.append(r_arencon)
+            new_runs.append(r_inc)
+
+            if suffix:
+                r_suffix = _make_plain_run(last_r, suffix)
+                new_runs.append(r_suffix)
+
+            for i, new_r in enumerate(new_runs):
+                insert_after.addnext(new_r)
+                insert_after = new_r
+
+            # Rebuild pairs list for any further (earlier) matches in this paragraph
+            pairs = []
+            field_depth = 0
+            for r in p.findall(f"{W}r"):
+                fld = r.find(f"{W}fldChar")
+                if fld is not None:
+                    ftype = fld.get(f"{W}fldCharType")
+                    if ftype == "begin":
+                        field_depth += 1
+                    elif ftype == "end":
+                        field_depth -= 1
+                    continue
+                if field_depth > 0:
+                    continue
+                t = r.find(f"{W}t")
+                if t is not None:
+                    pairs.append((r, t))
+
+    # ── Walk body paragraphs ─────────────────────────────────────────────────
+    for para in doc.paragraphs:
+        _process_paragraph(para)
+
+    # ── Walk table cells (all levels, incl. nested tables) ───────────────────
+    def _walk_tables(tables):
+        for table in tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        _process_paragraph(para)
+                    _walk_tables(cell.tables)  # nested tables
+
+    _walk_tables(doc.tables)
+    # Headers and footers are intentionally excluded.
 
 
 def remove_system_section(doc, placeholder_keys):

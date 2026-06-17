@@ -19,15 +19,15 @@ SYSTEM_DEFAULTS = {
     "fire_alarm": {
         "description": (
             "The building is protected by an addressable, single-stage fire alarm system. "
-            "The fire alarm control panel is located in the {{facp_room}} on the {{facp_floor}} of the building. "
-            "The fire alarm annunciator panel is located in the {{faap_room}} on the {{faap_floor}} of the building."
+            "The fire alarm control panel is located in the {{facp_room}} on the {{facp_floor}} of the building."
+            "{{faap_sentence}}"
             "\n\n"
             "Fire alarm initiating devices include {{fa_initiating_devices}}."
             "\n\n"
             "The fire alarm supervises various fire protection systems within the building. "
             "Supervisory devices include {{fa_supervisory_devices}}."
             "\n\n"
-            "Occupant notification of a fire alarm condition is provided via horns and strobes "
+            "Occupant notification of a fire alarm condition is provided via {{fa_notification_devices}} "
             "installed throughout the building."
         ),
         "integrations": (
@@ -244,13 +244,6 @@ _SPR_STATIC_INT = (
     "supervised valves, and for monitoring of system pressure via pressure switches."
 )
 
-# Label fragments used to build the opening sentence
-_SUBTYPE_LABELS = {
-    "Wet Pipe":  "wet-pipe",
-    "Dry Pipe":  "dry-pipe",
-}
-
-
 def get_sprinkler_text(active_subtypes):
     """
     Return (description, integrations) for the selected sub-types.
@@ -261,15 +254,6 @@ def get_sprinkler_text(active_subtypes):
     if not selected:
         desc = f"The building is protected by a {{{{sprk_type}}}} automatic sprinkler system.  {_SPR_STATIC_DESC}"
         return desc, _SPR_STATIC_INT
-
-    # Build "wet-pipe and dry-pipe" style label
-    labels = [_SUBTYPE_LABELS[s] for s in selected]
-    if len(labels) == 1:
-        type_str = labels[0]
-    elif len(labels) == 2:
-        type_str = f"{labels[0]} and {labels[1]}"
-    else:
-        type_str = ", ".join(labels[:-1]) + f", and {labels[-1]}"
 
     # Use {{sprk_type}} placeholder — substituted live in UI and by replace_all in Word
     opening = "The building is protected by a {{sprk_type}} automatic sprinkler system."
@@ -492,19 +476,24 @@ MATRIX_DEFAULTS = {
     ],
     "elevator": [
         (
-            "Elevator Primary Recall",
+            "Primary Recall",
             "No alarm condition on fire alarm system, elevators not in fire mode recall.",
             "Alarm condition on fire alarm system. Relay activated for primary recall fire alarm condition.",
         ),
         (
-            "Elevator Alternate Recall",
+            "Alternate Recall",
             "No alarm condition on fire alarm system, elevators not in fire mode recall.",
             "Alarm condition on fire alarm system on floor of primary recall. Relay activated for alternate recall fire alarm condition.",
         ),
         (
-            "Elevator Firefighter Warning Recall",
+            "Top of Shaft",
             "No alarm condition on fire alarm system, elevators not in fire mode recall.",
-            "Alarm condition on fire alarm system in elevator shaft or machine room. Relay activated for firefighter warning recall condition.",
+            "Alarm condition on fire alarm system from top of shaft. Relay activated for primary elevator recall fire alarm condition and firefighter warning (flashing) indicator.",
+        ),
+        (
+            "Elevator Pit",
+            "No alarm condition on fire alarm system, elevators not in fire mode recall.",
+            "Alarm condition on fire alarm system from pit of elevator shaft. Relay activated for primary elevator recall fire alarm condition and firefighter warning (flashing) indicator.",
         ),
     ],
 }
@@ -687,16 +676,20 @@ TP_DEFAULTS = {
     ],
     "elevator": [
         (
-            "- Review installation of fire alarm elevator relay connection to elevator system.\n- Confirm fire alarm reset and clear of any off-normal conditions.\n- Confirm elevators on a floor other than the primary recall level (ground floor).",
-            "- Activate a fire detector located on a floor other than the ground floor.\n- Confirm correct fire alarm annunciation.\n- Confirm elevators recall to the ground floor and remain at the elevator lobby.\n- Confirm in-car buttons do not operate in each elevator car.\n- Confirm the in-car recall light is illuminated steady in each elevator car.\n- Return elevator system and fire alarm system to normal condition.",
+            "- Review installation of fire alarm elevator relay connection to elevator system.\n- Confirm fire alarm reset and clear of any off-normal conditions.\n- Confirm elevators on a floor other than the primary recall level ({{elev_prim_rcl}}).",
+            "- Activate a fire detector located on a floor other than the {{elev_prim_rcl}}.\n- Confirm correct fire alarm annunciation.\n- Confirm elevators recall to the {{elev_prim_rcl}} and remain at the elevator lobby.\n- Confirm in-car buttons do not operate in each elevator car.\n- Confirm the in-car recall light is illuminated steady in each elevator car.\n- Return elevator system and fire alarm system to normal condition.",
         ),
         (
             "- Review installation of fire alarm elevator relay connection to elevator system.\n- Confirm fire alarm reset and clear of any off-normal conditions.\n- Confirm elevators are in operating condition.",
-            "- Activate a fire detector located at elevator lobby of recall level.\n- Confirm correct fire alarm annunciation.\n- Confirm elevators recall to the alternate floor and remains at the elevator lobby.\n- Confirm in-car buttons do not operate in each elevator car.\n- Confirm in-car buttons do not operate in designated firefighter elevator car.\n- Return elevator system and fire alarm system to normal condition.",
+            "- Activate a fire detector located at the elevator lobby of the recall level.\n- Confirm correct fire alarm annunciation.\n- Confirm elevators recall to the {{elev_alt_rcl}} and remain at the elevator lobby.\n- Confirm in-car buttons do not operate in each elevator car.\n- Confirm in-car buttons do not operate in designated firefighter elevator car.\n- Return elevator system and fire alarm system to normal condition.",
         ),
         (
-            "- Review installation of fire alarm elevator relay connection to elevator system.\n- Confirm fire alarm reset and clear of any off-normal conditions.\n- Confirm elevators on a floor other than the primary recall level (ground floor).",
-            "- Activate a fire detector located within the elevator shaft and/or elevator machine room.\n- Confirm correct fire alarm system annunciation.\n- Confirm elevators recall to the ground floor and remain.\n- Confirm in-car buttons do not operate in each elevator car.\n- Confirm the in-car recall light is intermittently illuminated (flashing) in each elevator car.\n- Activate emergency firefighter elevator override.\n- Confirm in-car buttons do not operate in designated firefighter elevator.\n- Return elevator system and fire alarm system to normal condition.",
+            "- Review installation of fire alarm elevator relay connection to elevator system.\n- Confirm fire alarm reset and clear of any off-normal conditions.\n- Confirm elevators are in operating condition.",
+            "- Activate smoke detector located at the top of the elevator shaft.\n- Confirm correct fire alarm system annunciation.\n- Confirm elevators recall to the {{elev_prim_rcl}} and remain.\n- Confirm in-car buttons do not operate in each elevator car.\n- Confirm the in-car recall light is intermittently illuminated (flashing) in each elevator car.\n- Activate emergency firefighter elevator override.\n- Confirm in-car buttons do not operate in designated firefighter elevator.\n- Return elevator system and fire alarm system to normal condition.",
+        ),
+        (
+            "- Review installation of fire alarm elevator relay connection to elevator system.\n- Confirm fire alarm reset and clear of any off-normal conditions.\n- Confirm elevators are in operating condition.",
+            "- Activate heat detector located in the pit of the elevator shaft.\n- Confirm correct fire alarm system annunciation.\n- Confirm elevators recall to the {{elev_prim_rcl}} and remain.\n- Confirm in-car buttons do not operate in each elevator car.\n- Confirm the in-car recall light is intermittently illuminated (flashing) in each elevator car.\n- Activate emergency firefighter elevator override.\n- Confirm in-car buttons do not operate in designated firefighter elevator.\n- Return elevator system and fire alarm system to normal condition.",
         ),
     ],
 }
@@ -705,7 +698,15 @@ TP_DEFAULTS = {
 # Appendix B defaults
 # APPB_DEFAULTS: pre-seeded integration row names per system
 # APPB_DESC_DEFAULTS: (normal_mode_description, fire_mode_description) per system
+# APPB_SW_TYPE_DEFAULTS: default Type/No. switch type (SV/FS/LP) per integration
+#   name, used to seed sprinkler/standpipe/pre-action Appendix B rows
 # ---------------------------------------------------------------------------
+
+APPB_SW_TYPE_DEFAULTS = {
+    "Water Flow": "FS",
+    "Valve Supervision": "SV",
+    "Low Pressure": "LP",
+}
 
 APPB_DEFAULTS = {
     "fire_alarm": [
@@ -772,11 +773,114 @@ APPB_DEFAULTS = {
         "System Flow",
     ],
     "elevator": [
-        "Elevator Primary Recall",
-        "Elevator Alternate Recall",
-        "Elevator Firefighter Warning Recall",
+        "Primary Recall",
+        "Alternate Recall",
+        "Top of Shaft",
+        "Elevator Pit",
     ],
 }
+
+NUM_TO_TEXT_WEEKS = {
+    1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
+    6: "Six", 7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten",
+    11: "Eleven", 12: "Twelve",
+}
+
+
+def format_weeks_notice(n):
+    return f"{NUM_TO_TEXT_WEEKS.get(n, str(n))} ({n})"
+
+
+NOTIFICATION_DEFAULTS = {
+    "noti_to_participants": (
+        "Integrated Testing Participants shall be provided {{participant_wks_notice}} week notice "
+        "of the date and time for the implementation of the Integrated Testing Plan:"
+    ),
+    "participant_wks_notice": 1,
+    "noti_to_occupants": (
+        "Building occupants shall be provided with {{occupant_hrs_notice}} hours notice of the implementation "
+        "of integrated testing.  Notification shall be provided via written notices posted at each building "
+        "entrance and each elevator lobby."
+    ),
+    "occupant_hrs_notice": 48,
+    "prop_notice_example": (
+        "Testing of the Fire Protection and Life Safety systems will be occurring on *Insert Date/Time Here*.  "
+        "During this time, the fire alarm system will sound and the fire protection and safety systems will "
+        "operate.  Please disregard the fire alarm system during this time unless notified otherwise."
+    ),
+}
+
+# ── Personnel Safety (Section 5) ──────────────────────────────────────────
+
+PPE_DEFAULTS = [
+    "Head Protection",
+    "Safety Eyewear",
+    "Ear Protection",
+    "Safety Footwear",
+    "Hi-Vis Safety Vest",
+]
+
+BUILDING_PHASE_TEXT = {
+    "occupied":     "in an occupied building",
+    "construction": "during the construction phase",
+}
+
+SAFETY_PROTOCOLS_INTRO_PPE = (
+    "Integrated Systems Testing will be implemented for this project {{building_phase}}. "
+    "The following Personal Protective Equipment (PPE) will be required for all participants:"
+)
+
+SAFETY_PROTOCOLS_INTRO_NO_PPE = (
+    "Integrated Systems Testing will be implemented for this project {{building_phase}}."
+)
+
+SAFETY_PROTOCOLS_BODY = (
+    "During implementation of the Integrated Testing Plan, no participant shall assume the system testing "
+    "will function as expected. Safe work practices and safe distances shall be maintained from all "
+    "equipment when operated."
+    "\n\n"
+    "In the event of the unexpected operation of a system, which could harm a testing participant, a "
+    "building occupant, or the system, the testing shall be immediately suspended by the testing "
+    "participant.  Refer to Section 5.3 for team communication protocols."
+    "\n\n"
+    "In the event of the discovery of an actual emergency during testing, emergency procedures shall be "
+    "immediately implemented by the testing participant.  Refer to Section 5.3 for team communication "
+    "protocols and Section 5.4 for emergency procedures."
+)
+
+SPECIAL_HAZARDS_DEFAULT = "There are no special hazards expected for this project."
+
+TEAM_COMMUNICATIONS_DEFAULT = (
+    "Integrated Systems Testing (IST) participants will be located throughout the facility as required to "
+    "review and confirm the test protocols being implemented.  The IST Coordinator will be in communication "
+    "with the IST participants via two-way radio and cellular telephones."
+    "\n\n"
+    "The IST Coordinator will instruct and direct the implementation of test protocols.  Only the IST "
+    "Coordinator shall provide direction and instruction to the test participants.  It is expected that "
+    "field observers report observed conditions by first identifying their location and then the observed "
+    "events and/or conditions."
+    "\n\n"
+    "In the event of the unexpected operation of a system, which could harm a testing participant, a "
+    "building occupant, or the system, the testing hall be immediately suspended by the testing participant.  "
+    "This shall be achieved by stopping equipment as fast as possible and as safe to do so from the "
+    "participant’s location, then broadcasting the words “STAND DOWN, STAND DOWN, STAND DOWN” "
+    "over the radio system followed by a description of the concern."
+    "\n\n"
+    "In the event of the discovery of an actual emergency during testing by an IST participant, the "
+    "emergency condition shall be identified to the IST Team broadcasting the words “STAND DOWN, STAND "
+    "DOWN, STAND DOWN” over the radio system followed by a description of the emergency. IST "
+    "participants shall stop all testing activities and equipment, as safe to do so, upon hearing “STAND "
+    "DOWN, STAND DOWN, STAND DOWN” over the radio system."
+    "\n\n"
+    "In the case of an actual emergency, the General Contractor shall implement the site emergency "
+    "procedures.  For unexpected operation of equipment, the IST Coordinator shall review the situation and "
+    "determine the next testing steps, as appropriate to the situation."
+)
+
+OCCUPANT_NOTIFICATION_DEFAULT = (
+    "In the event of an actual emergency during implementation of the IST Procedures, the General Contractor "
+    "shall implement the Site Emergency Procedures.  Refer to these procedures for additional information."
+)
 
 APPB_DESC_DEFAULTS = {
     "fire_alarm": (

@@ -6,7 +6,7 @@ to change. All implementation lives in the other word_gen_*.py modules.
 Module map:
   word_gen_core.py         low-level XML/run helpers
   word_gen_replacements.py build_replacements() — all {{placeholder}} values
-  word_gen_contacts.py     contractor, notification, signature, occupancy tables
+  word_gen_contacts.py     contact, notification, signature, occupancy tables
   word_gen_matrix.py       integrations matrix, gen-served expansion, diagram
   word_gen_sections.py     test procedure sections, absent-section removal
   word_gen_appendix.py     Appendix B (results) and Appendix C (blank form)
@@ -23,6 +23,7 @@ from word_gen_core import (
     replace_all,
     replace_placeholder_paragraph_with_paragraphs,
     remove_system_section,
+    style_arencon_runs,
 )
 from word_gen_replacements import build_replacements
 from word_gen_contacts import (
@@ -30,6 +31,7 @@ from word_gen_contacts import (
     populate_notifications_table,
     populate_signatures_table,
     populate_occupancies_table,
+    populate_ist_notes_table,
 )
 from word_gen_matrix import (
     populate_matrix_table,
@@ -39,6 +41,8 @@ from word_gen_matrix import (
 from word_gen_sections import (
     populate_test_procedures,
     _remove_absent_tp_blocks,
+    expand_gen_served_tp,
+    populate_elevator_action_table,
 )
 from word_gen_appendix import (
     _save_appc_template_rows,
@@ -71,6 +75,14 @@ def generate_report(data, template_path, output_path):
         paras = [p.strip() for p in building_desc.split("\n\n") if p.strip()]
         replace_placeholder_paragraph_with_paragraphs(doc, "building_description", paras)
 
+    # Personnel Safety (Section 5)
+    ps = data.get("personnel_safety", {})
+    for key in ("safety_protocols", "special_hazards", "team_communications", "occupant_notification"):
+        text = ps.get(key, "")
+        if text:
+            paras = [p.strip() for p in text.split("\n") if p.strip()]
+            replace_placeholder_paragraph_with_paragraphs(doc, key, paras)
+
     # Systems
     systems_data = data.get("systems", {})
     replacements = build_replacements(data)
@@ -101,8 +113,16 @@ def generate_report(data, template_path, output_path):
     if occupancies:
         populate_occupancies_table(doc, occupancies)
 
+    # IST Notes (Appendix B)
+    ist_notes = data.get("ist_notes", [])
+    if ist_notes:
+        populate_ist_notes_table(doc, ist_notes)
+
+    # Expand generator served TP bullets BEFORE test procedures run
+    expand_gen_served_tp(doc, data)
+
     # Test procedures — clone heading+table per integration row
-    populate_test_procedures(doc, data)
+    populate_test_procedures(doc, data, replacements)
 
     # Remove leftover TP template blocks for absent systems
     _remove_absent_tp_blocks(doc, data)
@@ -117,6 +137,12 @@ def generate_report(data, template_path, output_path):
     diag_png = data.get("diagram_png")
     if diag_png and os.path.exists(diag_png):
         insert_diagram_image(doc, diag_png)
+
+    # Elevator action table (Action | Operation Description)
+    populate_elevator_action_table(doc, data)
+
+    # Style all "Arencon Inc." occurrences in body/tables (headers excluded)
+    style_arencon_runs(doc)
 
     doc.save(output_path)
 

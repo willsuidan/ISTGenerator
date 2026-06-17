@@ -8,9 +8,9 @@ from tkinter import ttk
 from defaults import (
     APPB_DESC_DEFAULTS, GEN_SERVED_NORMAL, GEN_SERVED_GENMODE,
     GEN_SERVED_TP_NORMAL, GEN_SERVED_TP_GENMODE,
-    APPB_DEFAULTS, MATRIX_DEFAULTS, TP_DEFAULTS,
 )
 from constants import SYSTEMS
+from ui_scroll import bind_mousewheel, enable_text_autoresize
 
 
 class GenServedMixin:
@@ -32,8 +32,12 @@ class GenServedMixin:
         wrap_id = tab_canvas.create_window((0, 0), window=content_wrap, anchor="nw")
         content_wrap.bind("<Configure>", lambda e: tab_canvas.configure(scrollregion=tab_canvas.bbox("all")))
         tab_canvas.bind("<Configure>", lambda e: tab_canvas.itemconfig(wrap_id, width=e.width))
+        bind_mousewheel(tab_canvas)
 
-        ttk.Label(content_wrap, text="Integrations Matrix", font=("", 9, "bold")).pack(anchor="w", pady=(0, 2))
+        gs_matrix_hdr = ttk.Frame(content_wrap)
+        gs_matrix_hdr.pack(anchor="w", pady=(0, 2))
+        ttk.Label(gs_matrix_hdr, text="Integrations Matrix", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(gs_matrix_hdr, text="  (Sections 2 & 3)", foreground="gray", font=("", 8)).pack(side="left")
         ttk.Label(content_wrap, text="Emergency Generator / Served Systems", font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
 
         rows_frame = ttk.Frame(content_wrap)
@@ -48,6 +52,29 @@ class GenServedMixin:
         GS_DEFAULT_TP_NORMAL  = GEN_SERVED_TP_NORMAL.replace("{{connected_system}}", "{system}")
         GS_DEFAULT_TP_GENMODE = GEN_SERVED_TP_GENMODE.replace("{{connected_system}}", "{system}")
 
+        def _reorder_gs_matrix():
+            """Re-pack all gen-served matrix rows in current list order."""
+            matrix_rows = self._gen_served_matrix_rows
+            for r in matrix_rows:
+                sep_w = r.get("_sep")
+                rf    = r.get("_tp_frame")
+                if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                    sep_w.pack_forget()
+                if rf and rf.winfo_exists():
+                    rf.pack_forget()
+            for i, r in enumerate(matrix_rows):
+                sep_w = r.get("_sep")
+                rf    = r.get("_tp_frame")
+                if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                    if i == 0:
+                        sep_w.pack_forget()
+                    else:
+                        sep_w.pack(fill="x", pady=(16, 8))
+                if rf and rf.winfo_exists():
+                    rf.pack(fill="x", pady=(0, 6))
+
+        self._reorder_gs_matrix = _reorder_gs_matrix
+
         def _add_gen_served_row(integ="", normal="", fire="", tp_normal="", tp_fire=""):
             matrix_rows = self._gen_served_matrix_rows
             sep = ttk.Separator(rows_frame, orient="horizontal")
@@ -55,8 +82,10 @@ class GenServedMixin:
             if not matrix_rows:
                 sep.pack_forget()
 
-            row_f = ttk.Frame(rows_frame)
-            row_f.pack(fill="x", pady=(0, 6))
+            row_wrap = tk.Frame(rows_frame, bd=2, relief="flat", highlightthickness=0)
+            row_wrap.pack(fill="x", pady=(0, 6))
+            row_f = ttk.Frame(row_wrap)
+            row_f.pack(fill="x")
             row_f.columnconfigure(0, weight=0, minsize=160)
             row_f.columnconfigure(1, weight=1, uniform="gs_col")
             row_f.columnconfigure(2, weight=1, uniform="gs_col")
@@ -84,7 +113,52 @@ class GenServedMixin:
             widgets["_sep"] = sep if matrix_rows else None
 
             integ_outer = ttk.Frame(row_f)
-            integ_outer.grid(row=0, column=0, rowspan=3, sticky="nwe", padx=(0, 6))
+            integ_outer.grid(row=0, column=0, rowspan=5, sticky="nwe", padx=(0, 6))
+
+            # Drag handle
+            drag_hdr = ttk.Frame(integ_outer)
+            drag_hdr.pack(fill="x", pady=(0, 2))
+            drag_lbl = tk.Label(drag_hdr, text="≡", foreground="#aaaaaa",
+                                cursor="sb_v_double_arrow", font=("", 13))
+            drag_lbl.pack(side="left")
+
+            _drag_state = {"start_y": None, "src_idx": None}
+
+            def _drag_start(event, w=widgets):
+                _drag_state["start_y"] = event.y_root
+                _drag_state["src_idx"] = self._gen_served_matrix_rows.index(w)
+                drag_lbl.configure(foreground="#4a90d9")
+                row_wrap.configure(relief="solid", bd=2,
+                                   highlightbackground="#4a90d9",
+                                   highlightthickness=2, bg="#dce8ff")
+
+            def _drag_motion(event, w=widgets):
+                if _drag_state["src_idx"] is None:
+                    return
+                dy = event.y_root - _drag_state["start_y"]
+                if abs(dy) < 60:
+                    return
+                step = 1 if dy > 0 else -1
+                rows = self._gen_served_matrix_rows
+                src = _drag_state["src_idx"]
+                dst = max(0, min(len(rows) - 1, src + step))
+                if dst != src:
+                    rows.insert(dst, rows.pop(src))
+                    _drag_state["src_idx"] = dst
+                    _drag_state["start_y"] = event.y_root
+                    _reorder_gs_matrix()
+
+            def _drag_end(event):
+                _drag_state["start_y"] = None
+                _drag_state["src_idx"] = None
+                drag_lbl.configure(foreground="#aaaaaa")
+                row_wrap.configure(relief="flat", bd=0,
+                                   highlightthickness=0, bg="")
+
+            drag_lbl.bind("<ButtonPress-1>",   _drag_start)
+            drag_lbl.bind("<B1-Motion>",        _drag_motion)
+            drag_lbl.bind("<ButtonRelease-1>",  _drag_end)
+
             ttk.Label(integ_outer, text="Integration", font=("", 8), foreground="gray").pack(anchor="w")
             integ_t = tk.Text(integ_outer, wrap="none", height=1, width=32, relief="flat", bd=1)
             integ_t.insert("1.0", integ)
@@ -92,42 +166,43 @@ class GenServedMixin:
             ttk.Button(integ_outer, text="Remove Integration", command=_remove).pack(anchor="w", pady=(4, 0))
             widgets["integration"] = integ_t
 
-            nm_outer = ttk.Frame(row_f)
-            nm_outer.grid(row=0, column=1, sticky="nswe", padx=(0, 4))
-            ttk.Label(nm_outer, text="Normal Mode", font=("", 8), foreground="gray").pack(anchor="w")
-            normal_t = tk.Text(nm_outer, wrap="word", height=3, relief="flat", bd=1)
+            ttk.Label(row_f, text="Normal Mode", font=("", 8), foreground="gray").grid(row=0, column=1, sticky="w", padx=(0, 4))
+            normal_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1)
             normal_t.insert("1.0", normal)
-            normal_t.pack(fill="both", expand=True)
-            ttk.Label(nm_outer, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-            tp_normal_t = tk.Text(nm_outer, wrap="word", height=5)
+            normal_t.grid(row=1, column=1, sticky="new", padx=(0, 4))
+            enable_text_autoresize(normal_t, min_height=3, max_height=12)
+            ttk.Label(row_f, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").grid(row=2, column=1, sticky="w", padx=(0, 4), pady=(6, 0))
+            tp_normal_t = tk.Text(row_f, wrap="word", height=5)
             _lines = [l.strip() for l in tp_normal.strip().split("\n") if l.strip()]
             _lines = ["• " + l.lstrip("- •").strip() for l in _lines] if _lines else []
             tp_normal_t.insert("1.0", "\n".join(_lines))
-            tp_normal_t.pack(fill="both", expand=True)
-            ttk.Button(nm_outer, text="+ New Bullet",
+            tp_normal_t.grid(row=3, column=1, sticky="new", padx=(0, 4))
+            enable_text_autoresize(tp_normal_t, min_height=5, max_height=20)
+            ttk.Button(row_f, text="+ New Bullet",
                        command=lambda t=tp_normal_t: (t.insert(tk.INSERT, "\n• ") if t.get("1.0", "end-1c").strip() else t.insert("1.0", "• "))
-                       ).pack(anchor="w", pady=(2, 0))
+                       ).grid(row=4, column=1, sticky="w", padx=(0, 4), pady=(2, 0))
             widgets["normal_mode"] = normal_t
 
-            fm_outer = ttk.Frame(row_f)
-            fm_outer.grid(row=0, column=2, sticky="nswe")
-            ttk.Label(fm_outer, text="Generator Mode", font=("", 8), foreground="gray").pack(anchor="w")
-            fire_t = tk.Text(fm_outer, wrap="word", height=3, relief="flat", bd=1)
+            ttk.Label(row_f, text="Generator Mode", font=("", 8), foreground="gray").grid(row=0, column=2, sticky="w")
+            fire_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1)
             fire_t.insert("1.0", fire)
-            fire_t.pack(fill="both", expand=True)
-            ttk.Label(fm_outer, text="Test Procedure — Generator Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-            tp_fire_t = tk.Text(fm_outer, wrap="word", height=5)
+            fire_t.grid(row=1, column=2, sticky="new")
+            enable_text_autoresize(fire_t, min_height=3, max_height=12)
+            ttk.Label(row_f, text="Test Procedure — Generator Mode:", font=("", 8), foreground="gray").grid(row=2, column=2, sticky="w", pady=(6, 0))
+            tp_fire_t = tk.Text(row_f, wrap="word", height=5)
             _lines2 = [l.strip() for l in tp_fire.strip().split("\n") if l.strip()]
             _lines2 = ["• " + l.lstrip("- •").strip() for l in _lines2] if _lines2 else []
             tp_fire_t.insert("1.0", "\n".join(_lines2))
-            tp_fire_t.pack(fill="both", expand=True)
-            ttk.Button(fm_outer, text="+ New Bullet",
+            tp_fire_t.grid(row=3, column=2, sticky="new")
+            enable_text_autoresize(tp_fire_t, min_height=5, max_height=20)
+            ttk.Button(row_f, text="+ New Bullet",
                        command=lambda t=tp_fire_t: (t.insert(tk.INSERT, "\n• ") if t.get("1.0", "end-1c").strip() else t.insert("1.0", "• "))
-                       ).pack(anchor="w", pady=(2, 0))
+                       ).grid(row=4, column=2, sticky="w", pady=(2, 0))
             widgets["fire_mode"] = fire_t
             widgets["tp_normal"] = tp_normal_t
             widgets["tp_fire"]   = tp_fire_t
-            widgets["_tp_frame"] = row_f
+            widgets["_tp_frame"] = row_wrap
+            widgets["_row_wrap"] = row_wrap
 
             matrix_rows.append(widgets)
             return widgets
@@ -159,14 +234,16 @@ class GenServedMixin:
         gs_fire_desc_e.grid(row=1, column=1, sticky="we", pady=2, ipady=2)
         desc_frame.columnconfigure(1, weight=1)
 
-        COL_NO   = 0
-        COL_INTG = 1
-        COL_NM   = 2
-        COL_NT   = 3
-        COL_RM   = 4
+        COL_DH   = 0
+        COL_NO   = 1
+        COL_INTG = 2
+        COL_NM   = 3
+        COL_NT   = 4
+        COL_RM   = 5
 
         appb_rows_frame = ttk.Frame(content_wrap)
         appb_rows_frame.pack(fill="x")
+        appb_rows_frame.columnconfigure(COL_DH,   weight=0, minsize=22)
         appb_rows_frame.columnconfigure(COL_NO,   weight=0, minsize=30)
         appb_rows_frame.columnconfigure(COL_INTG, weight=2)
         appb_rows_frame.columnconfigure(COL_NM,   weight=0, minsize=210)
@@ -205,11 +282,85 @@ class GenServedMixin:
             _repaint_all()
             return btns, _repaint_all
 
+        def _regrid_gs_rows():
+            for i, r in enumerate(gs_appb_rows):
+                g = i + 1
+                r["_grid_row"] = g
+                for wkey in ("_drag_handle", "_no_lbl", "integration", "_nf_outer", "notes", "_rm_btn"):
+                    w = r.get(wkey)
+                    if w and hasattr(w, "winfo_exists") and w.winfo_exists():
+                        w.grid(row=g)
+                lbl = r.get("_no_lbl")
+                if lbl and lbl.winfo_exists():
+                    lbl.configure(text=str(i + 1))
+
         def _add_gs_appb_row(integration="", normal="", fire="", notes=""):
             idx = len(gs_appb_rows) + 1
             grid_row = _next_row[0]
             _next_row[0] += 1
             widgets_b = {"_grid_row": grid_row}
+
+            drag_lbl = tk.Label(appb_rows_frame, text="≡", foreground="#aaaaaa",
+                                cursor="sb_v_double_arrow", font=("", 11))
+            drag_lbl.grid(row=grid_row, column=COL_DH, sticky="w", padx=(2, 0), pady=3)
+            widgets_b["_drag_handle"] = drag_lbl
+
+            _drag_state = {"start_y": None, "src_idx": None}
+
+            def _highlight_gs_appb_row(w, active):
+                hl  = "#4a90d9" if active else "#aaaaaa"
+                bg  = "#dce8ff" if active else ""
+                for wkey in ("_drag_handle", "_no_lbl"):
+                    ww = w.get(wkey)
+                    if ww and ww.winfo_exists():
+                        try: ww.configure(bg=bg if bg else ww.master.cget("bg"))
+                        except Exception: pass
+                integ = w.get("integration")
+                if integ and integ.winfo_exists():
+                    integ.configure(highlightbackground=hl,
+                                    highlightthickness=2 if active else 1,
+                                    bg="#dce8ff" if active else "white")
+                nf = w.get("_nf_outer")
+                if nf and nf.winfo_exists():
+                    try: nf.configure(relief="solid" if active else "flat",
+                                      borderwidth=1 if active else 0)
+                    except Exception: pass
+                nt = w.get("notes")
+                if nt and nt.winfo_exists():
+                    try: nt.configure(foreground=hl if active else "")
+                    except Exception: pass
+
+            def _drag_start(event, w=widgets_b):
+                _drag_state["start_y"] = event.y_root
+                _drag_state["src_idx"] = gs_appb_rows.index(w)
+                drag_lbl.configure(foreground="#4a90d9")
+                _highlight_gs_appb_row(w, True)
+
+            def _drag_motion(event, w=widgets_b):
+                if _drag_state["src_idx"] is None:
+                    return
+                dy = event.y_root - _drag_state["start_y"]
+                if abs(dy) < 40:
+                    return
+                step = 1 if dy > 0 else -1
+                src = _drag_state["src_idx"]
+                dst = max(0, min(len(gs_appb_rows) - 1, src + step))
+                if dst != src:
+                    gs_appb_rows.insert(dst, gs_appb_rows.pop(src))
+                    _drag_state["src_idx"] = dst
+                    _drag_state["start_y"] = event.y_root
+                    _regrid_gs_rows()
+
+            def _drag_end(event):
+                _drag_state["start_y"] = None
+                src_w = widgets_b
+                _drag_state["src_idx"] = None
+                drag_lbl.configure(foreground="#aaaaaa")
+                _highlight_gs_appb_row(src_w, False)
+
+            drag_lbl.bind("<ButtonPress-1>",   _drag_start)
+            drag_lbl.bind("<B1-Motion>",        _drag_motion)
+            drag_lbl.bind("<ButtonRelease-1>",  _drag_end)
 
             no_lbl = ttk.Label(appb_rows_frame, text=str(idx), foreground="gray")
             no_lbl.grid(row=grid_row, column=COL_NO, sticky="w", padx=(4, 2), pady=3)
@@ -226,6 +377,7 @@ class GenServedMixin:
             fm_var = tk.StringVar(value=fire)
             nf_outer = ttk.Frame(appb_rows_frame)
             nf_outer.grid(row=grid_row, column=COL_NM, sticky="nw", padx=(0, 6), pady=3)
+            widgets_b["_nf_outer"] = nf_outer
             nm_f = ttk.Frame(nf_outer)
             nm_f.pack(fill="x", pady=(0, 4))
             ttk.Label(nm_f, text="Normal:", foreground="gray", font=("", 8), width=8).pack(side="left")
@@ -249,10 +401,7 @@ class GenServedMixin:
                     if hasattr(wval, "destroy"):
                         try: wval.destroy()
                         except Exception: pass
-                for i, rb in enumerate(gs_appb_rows):
-                    lbl = rb.get("_no_lbl")
-                    if lbl and lbl.winfo_exists():
-                        lbl.configure(text=str(i + 1))
+                _regrid_gs_rows()
 
             rm_btn = ttk.Button(appb_rows_frame, text="✕", width=2, command=_remove_b)
             rm_btn.grid(row=grid_row, column=COL_RM, padx=(0, 4), pady=3)
@@ -263,6 +412,7 @@ class GenServedMixin:
 
         self._gs_appb_rows      = gs_appb_rows
         self._add_gs_appb_row   = _add_gs_appb_row
+        self._regrid_gs_rows_fn = _regrid_gs_rows
         self._gs_normal_desc_e  = gs_normal_desc_e
         self._gs_fire_desc_e    = gs_fire_desc_e
 
@@ -296,7 +446,7 @@ class GenServedMixin:
 
     def _build_pre_action_panel_tab(self):
         """Build the Pre-Action Panel tab (hidden until checkbox selected)."""
-        from defaults import MATRIX_DEFAULTS, TP_DEFAULTS, APPB_DESC_DEFAULTS, APPB_DEFAULTS
+        from defaults import MATRIX_DEFAULTS, TP_DEFAULTS, APPB_DEFAULTS
         outer = ttk.Frame(self.notebook)
         self.notebook.add(outer, text="Pre-Action Panel")
         self._pre_action_panel_tab_id = self.notebook.tabs()[-1]
@@ -312,9 +462,13 @@ class GenServedMixin:
         wrap_id = tab_canvas.create_window((0, 0), window=content_wrap, anchor="nw")
         content_wrap.bind("<Configure>", lambda e: tab_canvas.configure(scrollregion=tab_canvas.bbox("all")))
         tab_canvas.bind("<Configure>", lambda e: tab_canvas.itemconfig(wrap_id, width=e.width))
+        bind_mousewheel(tab_canvas)
 
         # ── Integrations Matrix ───────────────────────────────────────────────
-        ttk.Label(content_wrap, text="Integrations Matrix", font=("", 9, "bold")).pack(anchor="w", pady=(0, 2))
+        pap_matrix_hdr = ttk.Frame(content_wrap)
+        pap_matrix_hdr.pack(anchor="w", pady=(0, 2))
+        ttk.Label(pap_matrix_hdr, text="Integrations Matrix", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(pap_matrix_hdr, text="  (Sections 2 & 3)", foreground="gray", font=("", 8)).pack(side="left")
         ttk.Label(content_wrap, text="Pre-Action Panel / Pre-Action Sprinkler System", font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
 
         matrix_rows = []
@@ -326,14 +480,35 @@ class GenServedMixin:
         pap_matrix_defaults = MATRIX_DEFAULTS.get("pre_action_panel", [])
         pap_tp_defaults      = TP_DEFAULTS.get("pre_action_panel", [])
 
+        def _reorder_pap_matrix():
+            for r in matrix_rows:
+                sep_w = r.get("_sep")
+                rf    = r.get("_tp_frame")
+                if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                    sep_w.pack_forget()
+                if rf and rf.winfo_exists():
+                    rf.pack_forget()
+            for i, r in enumerate(matrix_rows):
+                sep_w = r.get("_sep")
+                rf    = r.get("_tp_frame")
+                if sep_w and hasattr(sep_w, "winfo_exists") and sep_w.winfo_exists():
+                    if i == 0:
+                        sep_w.pack_forget()
+                    else:
+                        sep_w.pack(fill="x", pady=(16, 8))
+                if rf and rf.winfo_exists():
+                    rf.pack(fill="x", pady=(0, 6))
+
         def _add_pap_matrix_row(integration="", normal="", fire="", tp_normal="", tp_fire=""):
             sep = ttk.Separator(matrix_frame, orient="horizontal")
             sep.pack(fill="x", pady=(16, 8))
             if not matrix_rows:
                 sep.pack_forget()
 
-            row_f = ttk.Frame(matrix_frame)
-            row_f.pack(fill="x", pady=(0, 6))
+            row_wrap = tk.Frame(matrix_frame, bd=2, relief="flat", highlightthickness=0)
+            row_wrap.pack(fill="x", pady=(0, 6))
+            row_f = ttk.Frame(row_wrap)
+            row_f.pack(fill="x")
             row_f.columnconfigure(0, weight=0, minsize=160)
             row_f.columnconfigure(1, weight=1, uniform="pap_col")
             row_f.columnconfigure(2, weight=1, uniform="pap_col")
@@ -350,7 +525,50 @@ class GenServedMixin:
             widgets["_sep"] = sep if matrix_rows else None
 
             integ_outer = ttk.Frame(row_f)
-            integ_outer.grid(row=0, column=0, rowspan=3, sticky="nwe", padx=(0, 6))
+            integ_outer.grid(row=0, column=0, rowspan=5, sticky="nwe", padx=(0, 6))
+
+            drag_hdr = ttk.Frame(integ_outer)
+            drag_hdr.pack(fill="x", pady=(0, 2))
+            drag_lbl = tk.Label(drag_hdr, text="≡", foreground="#aaaaaa",
+                                cursor="sb_v_double_arrow", font=("", 13))
+            drag_lbl.pack(side="left")
+
+            _drag_state = {"start_y": None, "src_idx": None}
+
+            def _drag_start(event, w=widgets):
+                _drag_state["start_y"] = event.y_root
+                _drag_state["src_idx"] = matrix_rows.index(w)
+                drag_lbl.configure(foreground="#4a90d9")
+                row_wrap.configure(relief="solid", bd=2,
+                                   highlightbackground="#4a90d9",
+                                   highlightthickness=2, bg="#dce8ff")
+
+            def _drag_motion(event, w=widgets):
+                if _drag_state["src_idx"] is None:
+                    return
+                dy = event.y_root - _drag_state["start_y"]
+                if abs(dy) < 60:
+                    return
+                step = 1 if dy > 0 else -1
+                src = _drag_state["src_idx"]
+                dst = max(0, min(len(matrix_rows) - 1, src + step))
+                if dst != src:
+                    matrix_rows.insert(dst, matrix_rows.pop(src))
+                    _drag_state["src_idx"] = dst
+                    _drag_state["start_y"] = event.y_root
+                    _reorder_pap_matrix()
+
+            def _drag_end(event):
+                _drag_state["start_y"] = None
+                _drag_state["src_idx"] = None
+                drag_lbl.configure(foreground="#aaaaaa")
+                row_wrap.configure(relief="flat", bd=0,
+                                   highlightthickness=0, bg="")
+
+            drag_lbl.bind("<ButtonPress-1>",   _drag_start)
+            drag_lbl.bind("<B1-Motion>",        _drag_motion)
+            drag_lbl.bind("<ButtonRelease-1>",  _drag_end)
+
             ttk.Label(integ_outer, text="Integration", font=("", 8), foreground="gray").pack(anchor="w")
             integ_t = tk.Text(integ_outer, wrap="none", height=1, width=28, relief="flat", bd=1)
             integ_t.insert("1.0", integration)
@@ -358,38 +576,39 @@ class GenServedMixin:
             ttk.Button(integ_outer, text="Remove Integration", command=_remove).pack(anchor="w", pady=(4, 0))
             widgets["integration"] = integ_t
 
-            nm_outer = ttk.Frame(row_f)
-            nm_outer.grid(row=0, column=1, sticky="nswe", padx=(0, 4))
-            ttk.Label(nm_outer, text="Normal Mode", font=("", 8), foreground="gray").pack(anchor="w")
-            normal_t = tk.Text(nm_outer, wrap="word", height=3, relief="flat", bd=1)
+            ttk.Label(row_f, text="Normal Mode", font=("", 8), foreground="gray").grid(row=0, column=1, sticky="w", padx=(0, 4))
+            normal_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1)
             normal_t.insert("1.0", normal)
-            normal_t.pack(fill="both", expand=True)
-            ttk.Label(nm_outer, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-            tp_normal_t = tk.Text(nm_outer, wrap="word", height=4)
+            normal_t.grid(row=1, column=1, sticky="new", padx=(0, 4))
+            enable_text_autoresize(normal_t, min_height=3, max_height=12)
+            ttk.Label(row_f, text="Test Procedure — Normal Mode:", font=("", 8), foreground="gray").grid(row=2, column=1, sticky="w", padx=(0, 4), pady=(6, 0))
+            tp_normal_t = tk.Text(row_f, wrap="word", height=4)
             _lines = ["• " + l.lstrip("- •").strip() for l in tp_normal.strip().split("\n") if l.strip()]
             tp_normal_t.insert("1.0", "\n".join(_lines))
-            tp_normal_t.pack(fill="both", expand=True)
-            ttk.Button(nm_outer, text="+ New Bullet",
-                       command=lambda t=tp_normal_t: t.insert(tk.INSERT, "\n• ")).pack(anchor="w", pady=(2, 0))
+            tp_normal_t.grid(row=3, column=1, sticky="new", padx=(0, 4))
+            enable_text_autoresize(tp_normal_t, min_height=4, max_height=20)
+            ttk.Button(row_f, text="+ New Bullet",
+                       command=lambda t=tp_normal_t: t.insert(tk.INSERT, "\n• ")).grid(row=4, column=1, sticky="w", padx=(0, 4), pady=(2, 0))
             widgets["normal_mode"] = normal_t
             widgets["tp_normal"]   = tp_normal_t
 
-            fm_outer = ttk.Frame(row_f)
-            fm_outer.grid(row=0, column=2, sticky="nswe")
-            ttk.Label(fm_outer, text="Fire Mode", font=("", 8), foreground="gray").pack(anchor="w")
-            fire_t = tk.Text(fm_outer, wrap="word", height=3, relief="flat", bd=1)
+            ttk.Label(row_f, text="Fire Mode", font=("", 8), foreground="gray").grid(row=0, column=2, sticky="w")
+            fire_t = tk.Text(row_f, wrap="word", height=3, relief="flat", bd=1)
             fire_t.insert("1.0", fire)
-            fire_t.pack(fill="both", expand=True)
-            ttk.Label(fm_outer, text="Test Procedure — Fire Mode:", font=("", 8), foreground="gray").pack(anchor="w", pady=(6, 0))
-            tp_fire_t = tk.Text(fm_outer, wrap="word", height=4)
+            fire_t.grid(row=1, column=2, sticky="new")
+            enable_text_autoresize(fire_t, min_height=3, max_height=12)
+            ttk.Label(row_f, text="Test Procedure — Fire Mode:", font=("", 8), foreground="gray").grid(row=2, column=2, sticky="w", pady=(6, 0))
+            tp_fire_t = tk.Text(row_f, wrap="word", height=4)
             _lines2 = ["• " + l.lstrip("- •").strip() for l in tp_fire.strip().split("\n") if l.strip()]
             tp_fire_t.insert("1.0", "\n".join(_lines2))
-            tp_fire_t.pack(fill="both", expand=True)
-            ttk.Button(fm_outer, text="+ New Bullet",
-                       command=lambda t=tp_fire_t: t.insert(tk.INSERT, "\n• ")).pack(anchor="w", pady=(2, 0))
+            tp_fire_t.grid(row=3, column=2, sticky="new")
+            enable_text_autoresize(tp_fire_t, min_height=4, max_height=20)
+            ttk.Button(row_f, text="+ New Bullet",
+                       command=lambda t=tp_fire_t: t.insert(tk.INSERT, "\n• ")).grid(row=4, column=2, sticky="w", pady=(2, 0))
             widgets["fire_mode"] = fire_t
             widgets["tp_fire"]   = tp_fire_t
-            widgets["_tp_frame"] = row_f
+            widgets["_tp_frame"] = row_wrap
+            widgets["_row_wrap"] = row_wrap
 
             matrix_rows.append(widgets)
             return widgets
@@ -425,14 +644,16 @@ class GenServedMixin:
         self._pap_appb_normal_desc_e = pap_normal_desc_e
         self._pap_appb_fire_desc_e   = pap_fire_desc_e
 
-        COL_NO   = 0
-        COL_INTG = 1
-        COL_NM   = 2
-        COL_NT   = 3
-        COL_RM   = 4
+        COL_DH   = 0
+        COL_NO   = 1
+        COL_INTG = 2
+        COL_NM   = 3
+        COL_NT   = 4
+        COL_RM   = 5
 
         appb_rows_frame = ttk.Frame(content_wrap)
         appb_rows_frame.pack(fill="x")
+        appb_rows_frame.columnconfigure(COL_DH,   weight=0, minsize=22)
         appb_rows_frame.columnconfigure(COL_NO,   weight=0, minsize=30)
         appb_rows_frame.columnconfigure(COL_INTG, weight=2)
         appb_rows_frame.columnconfigure(COL_NM,   weight=0, minsize=210)
@@ -451,21 +672,25 @@ class GenServedMixin:
         def _make_toggle_pap(frame, var, options):
             btns = {}
             colors = {"PASS": "#2e7d32", "FAIL": "#c62828", "NT": "#555555"}
-            def _repaint():
+            def _repaint_all():
                 for v, b in btns.items():
                     active = var.get() == v
-                    b.configure(bg=colors.get(v, "#555") if active else "#d0d0d0",
-                                fg="white" if active else "#333", relief="flat")
+                    b.configure(
+                        bg=colors.get(v, "#555555") if active else "#d0d0d0",
+                        fg="white" if active else "#333333",
+                        relief="flat"
+                    )
             def _click(v):
                 var.set("" if var.get() == v else v)
-                _repaint()
+                _repaint_all()
             for v, txt in options:
-                b = tk.Button(frame, text=txt, width=4, font=("", 7),
-                              command=lambda v=v: _click(v), relief="flat", bd=0)
-                b.pack(side="left", padx=1)
+                b = tk.Button(frame, text=txt, padx=7, pady=2, relief="flat", bd=0,
+                              cursor="hand2", font=("", 8),
+                              command=lambda v=v: _click(v))
+                b.pack(side="left", padx=(0, 3))
                 btns[v] = b
-            _repaint()
-            return var
+            _repaint_all()
+            return btns, _repaint_all
 
         def _add_pap_appb_row(integration="", normal="", fire="", notes="", sw_type="", sw_no=""):
             idx = len(pap_appb_rows) + 1
@@ -473,58 +698,137 @@ class GenServedMixin:
             _pap_next_row[0] += 1
             widgets = {"_grid_row": grid_row}
 
+            # Drag handle
+            drag_lbl = tk.Label(appb_rows_frame, text="≡", foreground="#aaaaaa",
+                                cursor="sb_v_double_arrow", font=("", 11))
+            drag_lbl.grid(row=grid_row, column=COL_DH, sticky="w", padx=(2, 0), pady=3)
+            widgets["_drag_handle"] = drag_lbl
+
+            _pap_drag_state = {"start_y": None, "src_idx": None}
+
+            def _highlight_pap_appb_row(w, active):
+                hl  = "#4a90d9" if active else "#aaaaaa"
+                bg  = "#dce8ff" if active else ""
+                for wkey in ("_drag_handle", "_no_lbl"):
+                    ww = w.get(wkey)
+                    if ww and ww.winfo_exists():
+                        try: ww.configure(bg=bg if bg else ww.master.cget("bg"))
+                        except Exception: pass
+                integ = w.get("integration")
+                if integ and integ.winfo_exists():
+                    integ.configure(highlightbackground=hl,
+                                    highlightthickness=2 if active else 1,
+                                    bg="#dce8ff" if active else "white")
+                nf = w.get("_nf_outer")
+                if nf and nf.winfo_exists():
+                    try: nf.configure(relief="solid" if active else "flat",
+                                      borderwidth=1 if active else 0)
+                    except Exception: pass
+                nt = w.get("notes")
+                if nt and nt.winfo_exists():
+                    try: nt.configure(foreground=hl if active else "")
+                    except Exception: pass
+
+            def _pap_drag_start(event, w=None):
+                if w is None: w = widgets
+                _pap_drag_state["start_y"] = event.y_root
+                _pap_drag_state["src_idx"] = pap_appb_rows.index(w)
+                drag_lbl.configure(foreground="#4a90d9")
+                _highlight_pap_appb_row(w, True)
+
+            def _pap_drag_motion(event, w=None):
+                if w is None: w = widgets
+                if _pap_drag_state["src_idx"] is None:
+                    return
+                dy = event.y_root - _pap_drag_state["start_y"]
+                if abs(dy) < 40:
+                    return
+                step = 1 if dy > 0 else -1
+                src = _pap_drag_state["src_idx"]
+                dst = max(0, min(len(pap_appb_rows) - 1, src + step))
+                if dst != src:
+                    pap_appb_rows.insert(dst, pap_appb_rows.pop(src))
+                    _pap_drag_state["src_idx"] = dst
+                    _pap_drag_state["start_y"] = event.y_root
+                    _repack_pap()
+
+            def _pap_drag_end(event, w=None):
+                if w is None: w = widgets
+                src_w = w
+                _pap_drag_state["start_y"] = None
+                _pap_drag_state["src_idx"] = None
+                drag_lbl.configure(foreground="#aaaaaa")
+                _highlight_pap_appb_row(src_w, False)
+
+            drag_lbl.bind("<ButtonPress-1>",   _pap_drag_start)
+            drag_lbl.bind("<B1-Motion>",        _pap_drag_motion)
+            drag_lbl.bind("<ButtonRelease-1>",  _pap_drag_end)
+
             no_lbl = ttk.Label(appb_rows_frame, text=str(idx), foreground="gray")
             no_lbl.grid(row=grid_row, column=COL_NO, sticky="w", padx=(4, 2), pady=3)
             widgets["_no_lbl"] = no_lbl
 
             integ_t = tk.Text(appb_rows_frame, wrap="word", height=2, relief="flat", bd=1,
-                              highlightthickness=1, highlightbackground="#cccccc", highlightcolor="#0078d4")
+                              highlightthickness=1, highlightbackground="#aaaaaa", highlightcolor="#0078d4")
             integ_t.insert("1.0", integration)
             integ_t.grid(row=grid_row, column=COL_INTG, sticky="nswe", padx=(0, 6), pady=3)
             widgets["integration"] = integ_t
 
             nm_var = tk.StringVar(value=normal)
             fm_var = tk.StringVar(value=fire)
-            nm_f = ttk.Frame(appb_rows_frame)
-            nm_f.grid(row=grid_row, column=COL_NM, sticky="nswe", padx=(0, 6), pady=3)
-            ttk.Label(nm_f, text="Normal Mode", font=("", 8), foreground="gray").pack(anchor="w")
-            _make_toggle_pap(nm_f, nm_var, [("PASS", "Pass"), ("FAIL", "Fail"), ("NT", "N/T")])
-            ttk.Label(nm_f, text="Fire Mode", font=("", 8), foreground="gray").pack(anchor="w", pady=(4, 0))
-            _make_toggle_pap(nm_f, fm_var, [("PASS", "Pass"), ("FAIL", "Fail"), ("NT", "N/T")])
+            nf_outer = ttk.Frame(appb_rows_frame)
+            nf_outer.grid(row=grid_row, column=COL_NM, sticky="nswe", padx=(0, 6), pady=3)
+            widgets["_nf_outer"] = nf_outer
+
+            nm_f = ttk.Frame(nf_outer)
+            nm_f.pack(fill="x", pady=(0, 4))
+            ttk.Label(nm_f, text="Normal:", foreground="gray", font=("", 8), width=7).pack(side="left")
+            _make_toggle_pap(nm_f, nm_var, [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
+
+            fm_f = ttk.Frame(nf_outer)
+            fm_f.pack(fill="x")
+            ttk.Label(fm_f, text="Fire:", foreground="gray", font=("", 8), width=7).pack(side="left")
+            _make_toggle_pap(fm_f, fm_var, [("PASS", "PASS"), ("FAIL", "FAIL"), ("NT", "NT")])
+
             widgets["normal"] = nm_var
             widgets["fire"]   = fm_var
 
-            notes_t = tk.Text(appb_rows_frame, wrap="word", height=4, relief="flat", bd=1,
-                              highlightthickness=1, highlightbackground="#cccccc", highlightcolor="#0078d4")
-            notes_t.insert("1.0", notes)
-            notes_t.grid(row=grid_row, column=COL_NT, sticky="nswe", padx=(0, 4), pady=3)
+            notes_t = ttk.Entry(appb_rows_frame)
+            notes_t.insert(0, notes)
+            notes_t.grid(row=grid_row, column=COL_NT, sticky="we", padx=(0, 4), pady=3, ipady=2)
             widgets["notes"] = notes_t
 
-            rm_btn = tk.Button(appb_rows_frame, text="×", fg="gray", relief="flat",
-                               font=("", 10),
-                               command=lambda r=widgets: _remove_pap_appb_row(r))
-            rm_btn.grid(row=grid_row, column=COL_RM, sticky="n", pady=3)
+            rm_btn = ttk.Button(appb_rows_frame, text="✕", width=2,
+                                command=lambda r=widgets: _remove_pap_appb_row(r))
+            rm_btn.grid(row=grid_row, column=COL_RM, padx=(0, 4), pady=3)
             widgets["_rm_btn"] = rm_btn
 
             pap_appb_rows.append(widgets)
             return widgets
 
+        def _repack_pap():
+            for i, r in enumerate(pap_appb_rows):
+                grid_row_i = i + 1
+                r["_grid_row"] = grid_row_i
+                lbl = r.get("_no_lbl")
+                if lbl and lbl.winfo_exists():
+                    lbl.configure(text=str(i + 1))
+                    lbl.grid(row=grid_row_i)
+                for key in ("_drag_handle", "integration", "_nf_outer", "notes", "_rm_btn"):
+                    w = r.get(key)
+                    if w and hasattr(w, "winfo_exists") and w.winfo_exists():
+                        w.grid(row=grid_row_i)
+
         def _remove_pap_appb_row(r):
-            for k, w in r.items():
-                if k.startswith("_") or not hasattr(w, "grid_remove"):
-                    continue
-                try:
-                    w.grid_remove()
-                except Exception:
-                    pass
-            for k, w in r.items():
-                if hasattr(w, "destroy"):
+            for wval in r.values():
+                if hasattr(wval, "destroy"):
                     try:
-                        w.destroy()
+                        wval.destroy()
                     except Exception:
                         pass
             if r in pap_appb_rows:
                 pap_appb_rows.remove(r)
+            _repack_pap()
 
         self._add_pap_appb_row = _add_pap_appb_row
 
@@ -621,7 +925,7 @@ class GenServedMixin:
             for name in served_names:
                 expected_appb_names.append(f"Generator #{n} {name} Emergency Power")
 
-        # Sync Appendix B rows: add any missing, in order
+        # Sync Appendix B rows: add any missing, remove stale, then sort to match expected order
         add_appb = getattr(self, "_add_gs_appb_row", None)
         gs_appb  = getattr(self, "_gs_appb_rows", [])
         existing_appb = {r["integration"].get("1.0", "end-1c").strip() for r in gs_appb if r.get("integration")}
@@ -642,6 +946,21 @@ class GenServedMixin:
                             except Exception: pass
                     if r in gs_appb:
                         gs_appb.remove(r)
+
+        # Sort gs_appb to match expected_appb_names order, unknown rows go to end
+        def _appb_sort_key(r):
+            t = r.get("integration")
+            name = t.get("1.0", "end-1c").strip() if t else ""
+            try:
+                return expected_appb_names.index(name)
+            except ValueError:
+                return len(expected_appb_names)
+        gs_appb.sort(key=_appb_sort_key)
+
+        # Re-grid all rows to reflect the new order
+        regrid = getattr(self, "_regrid_gs_rows_fn", None)
+        if regrid:
+            regrid()
 
         # Remove rows for unchecked systems (only auto-added ones with lorem text)
         to_remove = []
